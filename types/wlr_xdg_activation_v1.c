@@ -2,11 +2,10 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_seat.h>
-#include <wlr/types/wlr_surface.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/util/log.h>
-#include "util/signal.h"
 #include "util/token.h"
 #include "xdg-activation-v1-protocol.h"
 
@@ -33,7 +32,7 @@ void wlr_xdg_activation_token_v1_destroy(
 		wl_event_source_remove(token->timeout);
 	}
 
-	wlr_signal_emit_safe(&token->events.destroy, NULL);
+	wl_signal_emit_mutable(&token->events.destroy, NULL);
 
 	wl_list_remove(&token->link);
 	wl_list_remove(&token->seat_destroy.link);
@@ -116,9 +115,10 @@ static void token_handle_commit(struct wl_client *client,
 		}
 
 		if (token->surface != NULL &&
-				token->surface != token->seat->keyboard_state.focused_surface) {
+				token->surface != token->seat->keyboard_state.focused_surface &&
+				token->surface != token->seat->pointer_state.focused_surface) {
 			wlr_log(WLR_DEBUG, "Rejecting token commit request: "
-				"surface doesn't have keyboard focus");
+				"surface doesn't have focus");
 			goto error;
 		}
 	}
@@ -248,15 +248,11 @@ static void activation_handle_destroy(struct wl_client *client,
 	wl_resource_destroy(activation_resource);
 }
 
-static void activation_handle_get_activation_token(struct wl_client *client,
-		struct wl_resource *activation_resource, uint32_t id) {
-	struct wlr_xdg_activation_v1 *activation =
-		activation_from_resource(activation_resource);
-
+static struct wlr_xdg_activation_token_v1 *activation_token_create(
+		struct wlr_xdg_activation_v1 *activation) {
 	struct wlr_xdg_activation_token_v1 *token = calloc(1, sizeof(*token));
 	if (token == NULL) {
-		wl_client_post_no_memory(client);
-		return;
+		return NULL;
 	}
 	wl_list_init(&token->link);
 	wl_list_init(&token->seat_destroy.link);
@@ -264,6 +260,20 @@ static void activation_handle_get_activation_token(struct wl_client *client,
 	wl_signal_init(&token->events.destroy);
 
 	token->activation = activation;
+
+	return token;
+}
+
+static void activation_handle_get_activation_token(struct wl_client *client,
+		struct wl_resource *activation_resource, uint32_t id) {
+	struct wlr_xdg_activation_v1 *activation =
+		activation_from_resource(activation_resource);
+
+	struct wlr_xdg_activation_token_v1 *token = activation_token_create(activation);
+	if (token == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
 
 	uint32_t version = wl_resource_get_version(activation_resource);
 	token->resource = wl_resource_create(client,
@@ -302,7 +312,7 @@ static void activation_handle_activate(struct wl_client *client,
 		.token = token,
 		.surface = surface,
 	};
-	wlr_signal_emit_safe(&activation->events.request_activate, &event);
+	wl_signal_emit_mutable(&activation->events.request_activate, &event);
 
 	wlr_xdg_activation_token_v1_destroy(token);
 }
@@ -329,7 +339,7 @@ static void activation_bind(struct wl_client *client, void *data,
 static void handle_display_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_activation_v1 *activation =
 		wl_container_of(listener, activation, display_destroy);
-	wlr_signal_emit_safe(&activation->events.destroy, NULL);
+	wl_signal_emit_mutable(&activation->events.destroy, NULL);
 
 	struct wlr_xdg_activation_token_v1 *token, *token_tmp;
 	wl_list_for_each_safe(token, token_tmp, &activation->tokens, link) {
@@ -371,18 +381,11 @@ struct wlr_xdg_activation_v1 *wlr_xdg_activation_v1_create(
 
 struct wlr_xdg_activation_token_v1 *wlr_xdg_activation_token_v1_create(
 		struct wlr_xdg_activation_v1 *activation) {
-	struct wlr_xdg_activation_token_v1 *token = calloc(1, sizeof(*token));
+	struct wlr_xdg_activation_token_v1 *token = activation_token_create(activation);
+
 	if (token == NULL) {
 		return NULL;
 	}
-
-	wl_list_init(&token->link);
-	// Currently no way to set seat/surface
-	wl_list_init(&token->seat_destroy.link);
-	wl_list_init(&token->surface_destroy.link);
-	wl_signal_init(&token->events.destroy);
-
-	token->activation = activation;
 
 	if (!token_init(token)) {
 		wlr_xdg_activation_token_v1_destroy(token);
@@ -412,15 +415,10 @@ struct wlr_xdg_activation_token_v1 *wlr_xdg_activation_v1_add_token(
 		struct wlr_xdg_activation_v1 *activation, const char *token_str) {
 	assert(token_str);
 
-	struct wlr_xdg_activation_token_v1 *token = calloc(1, sizeof(*token));
+	struct wlr_xdg_activation_token_v1 *token = activation_token_create(activation);
 	if (token == NULL) {
 		return NULL;
 	}
-	wl_list_init(&token->link);
-	wl_list_init(&token->seat_destroy.link);
-	wl_list_init(&token->surface_destroy.link);
-
-	token->activation = activation;
 	token->token = strdup(token_str);
 
 	wl_list_insert(&activation->tokens, &token->link);

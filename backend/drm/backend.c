@@ -12,7 +12,6 @@
 #include <wlr/util/log.h>
 #include <xf86drm.h>
 #include "backend/drm/drm.h"
-#include "util/signal.h"
 
 struct wlr_drm_backend *get_drm_backend_from_backend(
 		struct wlr_backend *wlr_backend) {
@@ -104,6 +103,21 @@ static void handle_session_active(struct wl_listener *listener, void *data) {
 		wlr_log(WLR_INFO, "DRM fd resumed");
 		scan_drm_connectors(drm, NULL);
 
+		// The previous DRM master leaves KMS in an undefined state. We need
+		// to restore out own state, but be careful to avoid invalid
+		// configurations. The connector/CRTC mapping may have changed, so
+		// first disable all CRTCs, then light up the ones we were using
+		// before the VT switch.
+		// TODO: use the atomic API to improve restoration after a VT switch
+		for (size_t i = 0; i < drm->num_crtcs; i++) {
+			struct wlr_drm_crtc *crtc = &drm->crtcs[i];
+
+			if (drmModeSetCrtc(drm->fd, crtc->id, 0, 0, 0, NULL, 0, NULL) != 0) {
+				wlr_log_errno(WLR_ERROR, "Failed to disable CRTC %"PRIu32" after VT switch",
+					crtc->id);
+			}
+		}
+
 		struct wlr_drm_connector *conn;
 		wl_list_for_each(conn, &drm->outputs, link) {
 			struct wlr_output_mode *mode = NULL;
@@ -114,11 +128,14 @@ static void handle_session_active(struct wl_listener *listener, void *data) {
 			}
 			struct wlr_output_state state = {
 				.committed = committed,
+				.allow_artifacts = true,
 				.enabled = mode != NULL,
 				.mode_type = WLR_OUTPUT_STATE_MODE_FIXED,
 				.mode = mode,
 			};
-			drm_connector_commit_state(conn, &state);
+			if (!drm_connector_commit_state(conn, &state)) {
+				wlr_drm_conn_log(conn, WLR_ERROR, "Failed to restore state after VT switch");
+			}
 		}
 	} else {
 		wlr_log(WLR_INFO, "DRM fd paused");
@@ -250,15 +267,17 @@ struct wlr_backend *wlr_drm_backend_create(struct wl_display *display,
 			goto error_mgpu_renderer;
 		}
 
-		// Force a linear layout. In case explicit modifiers aren't supported,
-		// the meaning of implicit modifiers changes from one GPU to the other.
-		// In case explicit modifiers are supported, we still have no guarantee
-		// that the buffer producer will support these, so they might fallback
-		// to implicit modifiers.
+		// Forbid implicit modifiers, because their meaning changes from one
+		// GPU to another.
 		for (size_t i = 0; i < texture_formats->len; i++) {
 			const struct wlr_drm_format *fmt = texture_formats->formats[i];
-			wlr_drm_format_set_add(&drm->mgpu_formats, fmt->format,
-				DRM_FORMAT_MOD_LINEAR);
+			for (size_t j = 0; j < fmt->len; j++) {
+				uint64_t mod = fmt->modifiers[j];
+				if (mod == DRM_FORMAT_MOD_INVALID) {
+					continue;
+				}
+				wlr_drm_format_set_add(&drm->mgpu_formats, fmt->format, mod);
+			}
 		}
 	}
 

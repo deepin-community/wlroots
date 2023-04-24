@@ -1,34 +1,54 @@
-wlroots (0.15.1-6) unstable; urgency=medium
+wlroots (0.16.2-1) experimental; urgency=medium
 
-  * [101ea4a] Bump shlibs version.
-    We introduce a new function (that is contained in newer wlroots) so bump
-    the version to create a strict enough dependency.
+  * New upstream release
+  * [ed00fc6] Drop patches contained in the release
+  * Make autopkgtest a shell script. Thanks Andreas Henriksson
+    for the review.
 
- -- Guido Günther <agx@sigxcpu.org>  Mon, 27 Feb 2023 12:43:10 +0100
+ -- Guido Günther <agx@sigxcpu.org>  Sun, 19 Feb 2023 15:25:33 +0100
 
-wlroots (0.15.1-5) unstable; urgency=medium
+wlroots (0.16.1-2) experimental; urgency=medium
 
-  * [764e4e9] Cherry pick two upstream fixes.
-    Add seat-Allow-to-cancel-touches.patch: make sure touch gestures get cancelled
-    Add wlr_output_layout_contains_point-handle-outputs-that-aren.patch:
-    Avoid crash when an output is not part of the given layout
-    This helps on mobile devices.
-  * d/gbp.conf: Switch to bookworm
+  * [d707bc2] libwlroots-dev: Depend on vulkan development package
+    (Closes: #1030240)
+  * [d4e58a8] Switch dependency from libegl1-mesa to libegl
+  * [19386fa] Bump standards version
 
- -- Guido Günther <agx@sigxcpu.org>  Mon, 20 Feb 2023 12:36:16 +0100
+ -- Guido Günther <agx@sigxcpu.org>  Wed, 01 Feb 2023 16:57:22 +0100
 
-wlroots (0.15.1-4) unstable; urgency=medium
+wlroots (0.16.1-1) experimental; urgency=medium
 
-  * [df38414] Move upstream patches to d/patches/upstream.
-    Move patches cherry-picked from usptream to a separate folder.
-    This makes it obvious that they can be dropped when moving to
-    a new upstream version.
-  * [f1f2322] Fix occasional phoc crash on pinephone{,-pro}
-    Thanks to Andrey Skvortsov for testing (Closes: #1025870)
-  * [29b2f82] d/gbp.conf: Adjust for unstable
-    debian/latest ships 0.16.0 already
+  [ Guido Günther ]
+  * New upstream release
+    (Closes: #1027682)
+  * [cb91b99] Drop patches applied upstream
+  * [16358a9] Backport a patch from upstream's 0.16 branch
+    to fix an XWayland crash.
 
- -- Guido Günther <agx@sigxcpu.org>  Sun, 11 Dec 2022 14:15:23 +0100
+  [ Birger Schacht ]
+  * [fb08e6c] Add required Build-Dependencies to enable vulkan renderer
+    (Closes: #1028910)
+
+ -- Guido Günther <agx@sigxcpu.org>  Tue, 17 Jan 2023 11:57:52 +0100
+
+wlroots (0.16.0-2) experimental; urgency=medium
+
+  * [17dcb12] Fix compilation due to uninitialized values on some
+    architectures.
+
+ -- Guido Günther <agx@sigxcpu.org>  Thu, 24 Nov 2022 13:50:49 +0100
+
+wlroots (0.16.0-1) experimental; urgency=medium
+
+  * Upload to experimental
+  * [aac440c] New upstream release
+  * [e8cf5bd] d/gbp.conf: Use upstream-vcs
+  * [bea6239] d/watch: Project moved to fdo gitlab
+  * [e7033ad] Adjust to new soname
+  * [b9ef4e6] d/control: Update build-dependencies
+  * [5054262] Refresh patches. Drop those applied upstream.
+
+ -- Guido Günther <agx@sigxcpu.org>  Wed, 23 Nov 2022 16:20:46 +0100
 
 wlroots (0.15.1-3) unstable; urgency=medium
 

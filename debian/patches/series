@@ -1,6 +1,1 @@
 Revert-layer-shell-error-on-0-dimension-without-anchors.patch
-upstream/xdg-activation-Deduplicate-token-creation-code.patch
-upstream/Fixed-compiling-with-FFmpeg-5.0.patch
-upstream/wlr_output_commit_state-Make-sure-to-clear-the-back-buffe.patch
-upstream/seat-Allow-to-cancel-touches.patch
-upstream/wlr_output_layout_contains_point-handle-outputs-that-aren.patch

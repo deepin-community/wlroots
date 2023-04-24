@@ -4,11 +4,13 @@ Maintainer: Sway and related packages team <team+swaywm@tracker.debian.org>
 Uploaders: Guido Günther <agx@sigxcpu.org>, Birger Schacht <birger@rantanplan.org>
 Build-Depends:
  debhelper-compat (= 13),
+ glslang-tools,
+ hwdata,
  libavformat-dev,
  libavcodec-dev,
  libcap-dev,
- libdrm-dev (>= 2.4.109),
- libegl1-mesa-dev,
+ libdrm-dev (>= 2.4.113),
+ libegl-dev,
  libgbm-dev (>= 17.1.0),
  libgles2-mesa-dev,
  libinput-dev (>= 1.9.0),
@@ -16,6 +18,7 @@ Build-Depends:
  libpng-dev,
  libseat-dev,
  libsystemd-dev,
+ libvulkan-dev,
  libwayland-dev (>= 1.20),
  libxcb1-dev,
  libxcb-composite0-dev,
@@ -30,11 +33,11 @@ Build-Depends:
  libxcb-xinput-dev,
  libx11-xcb-dev,
  libxkbcommon-dev,
- meson (>= 0.58.1),
+ meson (>= 0.59.0),
  pkg-config,
  wayland-protocols (>= 1.24),
  xwayland,
-Standards-Version: 4.6.0
+Standards-Version: 4.6.2
 Section: libs
 Homepage: https://gitlab.freedesktop.org/wlroots/wlroots/
 Vcs-Git: https://salsa.debian.org/swaywm-team/wlroots.git
@@ -47,16 +50,17 @@ Architecture: any
 Multi-Arch: same
 Depends:
  ${misc:Depends},
- libwlroots10 (= ${binary:Version}),
+ libwlroots11 (= ${binary:Version}),
  libcap-dev,
  libdrm-dev,
- libegl1-mesa-dev,
+ libegl-dev,
  libgbm-dev (>= 17.1.0),
  libgles2-mesa-dev,
  libinput-dev (>= 1.14.0),
  libpixman-1-dev,
  libseat-dev,
  libsystemd-dev,
+ libvulkan-dev,
  libwayland-dev (>= 1.20),
  libxcb1-dev,
  libxcb-composite0-dev,
@@ -78,7 +82,7 @@ Description: Modular wayland compositor library - development headers
  .
  This package contains the development headers.
 
-Package: libwlroots10
+Package: libwlroots11
 Architecture: any
 Multi-Arch: same
 Depends:

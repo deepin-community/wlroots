@@ -1,3 +1,41 @@
+wlroots (0.17.0-1deepin1) unstable; urgency=medium
+
+  * Add deepin patch
+
+ -- xiangzelong <xiangzelong@deepin.org>  Fri, 24 Nov 2023 10:17:53 +0800
+
+wlroots (0.17.0-1~exp1) experimental; urgency=medium
+
+  * New upstream release
+  * [965a0e9] New upstream release
+  * [c8cf0e8] Refresh patches.
+    We drop the client patch as wlroots doesn't ship these anymore and
+    refresh the anchor patch.
+  * [f0cb805] d/control: Drop libav deps.
+    Clients are no longer shipped.
+  * [89f88ab] d/control: Update build-deps for new upstream version
+  * [ce42ad3] Bump soname to 12
+  * [a5445d6] Update examples.
+    Client examples were moved to a separate repo
+  * [99dd42c] d/copyright: Update with wlroots contributors
+  * [0ca6cb2] d/tests: Update autopkgtest to new API
+  * [bbd56db] d/control: Update dependencies of dev package.
+    According to the shipped pc file
+
+ -- Guido Günther <agx@sigxcpu.org>  Tue, 21 Nov 2023 19:26:36 +0100
+
+wlroots (0.16.2-3) unstable; urgency=medium
+
+  [ Diederik de Haas ]
+  * [dd75d42] d/control: Update libwlroots-examples description.
+    Upstream commit 58b2584863201f32d1a4770a1d5cde5e57b300c6 removed the
+    rootston compositor, so remove it from the package description too.
+    (Closes: #1027926)
+  * [4de9500] d/patches: Backport upstream patch to fix FTBFS with ffmpeg 6.0
+    (Closes: #1041493)
+
+ -- Guido Günther <agx@sigxcpu.org>  Thu, 03 Aug 2023 21:25:19 +0200
+
 wlroots (0.16.2-2deepin2) unstable; urgency=medium
 
   * Upload to unstable
@@ -10,6 +48,12 @@ wlroots (0.16.2-2deepin1) UNRELEASED; urgency=medium
   * add new patch 
 
  -- xiangzelong <xiangzelong@deepin.org>  Mon, 24 Apr 2023 11:41:46 +0800
+
+wlroots (0.16.2-2) unstable; urgency=medium
+
+  * Upload to unstable
+
+ -- Guido Günther <agx@sigxcpu.org>  Thu, 20 Jul 2023 16:41:50 +0200
 
 wlroots (0.16.2-1) experimental; urgency=medium
 

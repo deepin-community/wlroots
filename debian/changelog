@@ -1,3 +1,9 @@
+wlroots (0.17.0-1deepin2) unstable; urgency=medium
+
+  * Remove unused patch
+
+ -- rewine <luhongxu@deepin.org>  Fri, 24 Nov 2023 17:28:54 +0800
+
 wlroots (0.17.0-1deepin1) unstable; urgency=medium
 
   * Add deepin patch
@@ -45,7 +51,7 @@ wlroots (0.16.2-2deepin2) unstable; urgency=medium
 
 wlroots (0.16.2-2deepin1) UNRELEASED; urgency=medium
 
-  * add new patch 
+  * add new patch
 
  -- xiangzelong <xiangzelong@deepin.org>  Mon, 24 Apr 2023 11:41:46 +0800
 

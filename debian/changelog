@@ -1,20 +1,25 @@
-wlroots (0.17.0-2deepin2) unstable; urgency=medium
+wlroots (0.17.2-1) experimental; urgency=medium
 
-  * Release new version to reslove conflict with wlroots-git
+  * Upload to experimental to not disturb ongoing transitions
+  * New upstream release
+  * [c097505] gles2: Avoid crash when glGetInteger64vEXT is missing
+    Backport of upstream commit 341b3c8bd2387d9d6fb684e006a4eb45dfe09efa
 
- -- rewine <luhongxu@deepin.org>  Fri, 24 Nov 2023 20:00:00 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Tue, 12 Mar 2024 19:16:00 +0100
 
-wlroots (0.17.0-1deepin2) unstable; urgency=medium
+wlroots (0.17.1-2) unstable; urgency=medium
 
-  * Remove unused patch
+  * Upload to unstable.
 
- -- rewine <luhongxu@deepin.org>  Fri, 24 Nov 2023 17:28:54 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Tue, 09 Jan 2024 19:39:59 +0100
 
-wlroots (0.17.0-1deepin1) unstable; urgency=medium
+wlroots (0.17.1-1) experimental; urgency=medium
 
-  * Add deepin patch
+  * New upstream release
+  * d/control: Drop superfluous version information
+    Thanks: Diederik de Haas
 
- -- xiangzelong <xiangzelong@deepin.org>  Fri, 24 Nov 2023 10:17:53 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Fri, 22 Dec 2023 15:32:00 +0100
 
 wlroots (0.17.0-1~exp1) experimental; urgency=medium
 
@@ -47,19 +52,6 @@ wlroots (0.16.2-3) unstable; urgency=medium
     (Closes: #1041493)
 
  -- Guido Günther <agx@sigxcpu.org>  Thu, 03 Aug 2023 21:25:19 +0200
-
-wlroots (0.16.2-2deepin2) unstable; urgency=medium
-
-  * Upload to unstable
-  *  fix error dependency on debian/control
-
- -- xiangzelong <xiangzelong@deepin.org>  Mon, 03 Jul 2023 16:25:20 +0800
-
-wlroots (0.16.2-2deepin1) UNRELEASED; urgency=medium
-
-  * add new patch
-
- -- xiangzelong <xiangzelong@deepin.org>  Mon, 24 Apr 2023 11:41:46 +0800
 
 wlroots (0.16.2-2) unstable; urgency=medium
 

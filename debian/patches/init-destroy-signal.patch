@@ -1,0 +1,24 @@
+From dead0ebcc8cc0df26925b633040a39190eeb0c55 Mon Sep 17 00:00:00 2001
+From: groveer <groveer@outlook.com>
+Date: Mon, 6 May 2024 15:11:36 +0800
+Subject: [PATCH] wlr_pointer_gestures_v1: init destroy signal
+
+---
+ types/wlr_pointer_gestures_v1.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/types/wlr_pointer_gestures_v1.c b/types/wlr_pointer_gestures_v1.c
+index 0763f3ac34..bd9e1f9ebd 100644
+--- a/types/wlr_pointer_gestures_v1.c
++++ b/types/wlr_pointer_gestures_v1.c
+@@ -420,6 +420,8 @@ struct wlr_pointer_gestures_v1 *wlr_pointer_gestures_v1_create(
+ 		return NULL;
+ 	}
+
++	wl_signal_init(&gestures->events.destroy);
++
+ 	gestures->display_destroy.notify = handle_display_destroy;
+ 	wl_display_add_destroy_listener(display, &gestures->display_destroy);
+
+--
+GitLab

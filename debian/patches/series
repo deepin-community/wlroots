@@ -2,3 +2,4 @@ Revert-layer-shell-error-on-0-dimension-without-anchors.patch
 gles2-Avoid-crash-when-glGetInteger64vEXT-is-missing.patch
 emit-destroy-signal-in-destroy-function.patch
 init-destroy-signal.patch
+reset_hardware_cursor_on_failure.patch

@@ -1,0 +1,59 @@
+From 89ccbb3cab5f7c6ca8696760ffcefdc1dfe12e7e Mon Sep 17 00:00:00 2001
+From: rewine <luhongxu@deepin.org>
+Date: Wed, 24 Jul 2024 16:23:15 +0800
+Subject: [PATCH 3/5] Revert "shm: add support for wl_shm version 2"
+
+This reverts commit 22dab77d28ee8527c240ddaed63d1bd6b65e587d.
+---
+ types/wlr_shm.c | 12 ++----------
+ 1 file changed, 2 insertions(+), 10 deletions(-)
+
+diff --git a/types/wlr_shm.c b/types/wlr_shm.c
+index 1f45c88a..4b79f99e 100644
+--- a/types/wlr_shm.c
++++ b/types/wlr_shm.c
+@@ -22,7 +22,7 @@
+ #error "Lock-free C11 atomic pointers are required"
+ #endif
+ 
+-#define SHM_VERSION 2
++#define SHM_VERSION 1
+ 
+ struct wlr_shm_pool {
+ 	struct wl_resource *resource; // may be NULL
+@@ -460,14 +460,8 @@ error_fd:
+ 	close(fd);
+ }
+ 
+-static void shm_handle_release(struct wl_client *client,
+-		struct wl_resource *resource) {
+-	wl_resource_destroy(resource);
+-}
+-
+ static const struct wl_shm_interface shm_impl = {
+ 	.create_pool = shm_handle_create_pool,
+-	.release = shm_handle_release,
+ };
+ 
+ static void shm_bind(struct wl_client *client, void *data, uint32_t version,
+@@ -497,8 +491,6 @@ static void handle_display_destroy(struct wl_listener *listener, void *data) {
+ 
+ struct wlr_shm *wlr_shm_create(struct wl_display *display, uint32_t version,
+ 		const uint32_t *formats, size_t formats_len) {
+-	assert(version <= SHM_VERSION);
+-
+ 	// ARGB8888 and XRGB8888 must be supported per the wl_shm spec
+ 	bool has_argb8888 = false, has_xrgb8888 = false;
+ 	for (size_t i = 0; i < formats_len; i++) {
+@@ -530,7 +522,7 @@ struct wlr_shm *wlr_shm_create(struct wl_display *display, uint32_t version,
+ 		shm->formats[i] = convert_drm_format_to_wl_shm(formats[i]);
+ 	}
+ 
+-	shm->global = wl_global_create(display, &wl_shm_interface, version,
++	shm->global = wl_global_create(display, &wl_shm_interface, SHM_VERSION,
+ 		shm, shm_bind);
+ 	if (shm->global == NULL) {
+ 		wlr_log(WLR_ERROR, "wl_global_create failed");
+-- 
+2.44.0
+

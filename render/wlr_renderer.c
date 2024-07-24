@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -9,7 +8,6 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_drm.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_shm.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
@@ -27,25 +25,19 @@
 #endif // WLR_HAS_VULKAN_RENDERER
 
 #include "backend/backend.h"
-#include "render/pass.h"
 #include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
 #include "util/env.h"
 
 void wlr_renderer_init(struct wlr_renderer *renderer,
-		const struct wlr_renderer_impl *impl) {
-	if (!impl->begin_buffer_pass) {
-		assert(impl->begin);
-		assert(impl->clear);
-		assert(impl->scissor);
-		assert(impl->render_subtexture_with_matrix);
-		assert(impl->render_quad_with_matrix);
-	}
-	assert(impl->get_shm_texture_formats);
-	assert(impl->get_render_buffer_caps);
+		const struct wlr_renderer_impl *impl, uint32_t render_buffer_caps) {
+	assert(impl->begin_buffer_pass);
+	assert(impl->get_texture_formats);
+	assert(render_buffer_caps != 0);
 
 	*renderer = (struct wlr_renderer){
 		.impl = impl,
+		.render_buffer_caps = render_buffer_caps,
 	};
 
 	wl_signal_init(&renderer->events.destroy);
@@ -57,8 +49,6 @@ void wlr_renderer_destroy(struct wlr_renderer *r) {
 		return;
 	}
 
-	assert(!r->rendering);
-
 	wl_signal_emit_mutable(&r->events.destroy, r);
 
 	if (r->impl && r->impl->destroy) {
@@ -68,130 +58,9 @@ void wlr_renderer_destroy(struct wlr_renderer *r) {
 	}
 }
 
-bool renderer_bind_buffer(struct wlr_renderer *r, struct wlr_buffer *buffer) {
-	assert(!r->rendering);
-	if (!r->impl->bind_buffer) {
-		return false;
-	}
-	return r->impl->bind_buffer(r, buffer);
-}
-
-bool wlr_renderer_begin(struct wlr_renderer *r, uint32_t width, uint32_t height) {
-	assert(!r->rendering);
-
-	if (!r->impl->begin(r, width, height)) {
-		return false;
-	}
-
-	r->rendering = true;
-	return true;
-}
-
-bool wlr_renderer_begin_with_buffer(struct wlr_renderer *r,
-		struct wlr_buffer *buffer) {
-	if (!renderer_bind_buffer(r, buffer)) {
-		return false;
-	}
-	if (!wlr_renderer_begin(r, buffer->width, buffer->height)) {
-		renderer_bind_buffer(r, NULL);
-		return false;
-	}
-	r->rendering_with_buffer = true;
-	return true;
-}
-
-void wlr_renderer_end(struct wlr_renderer *r) {
-	assert(r->rendering);
-
-	if (r->impl->end) {
-		r->impl->end(r);
-	}
-
-	r->rendering = false;
-
-	if (r->rendering_with_buffer) {
-		renderer_bind_buffer(r, NULL);
-		r->rendering_with_buffer = false;
-	}
-}
-
-void wlr_renderer_clear(struct wlr_renderer *r, const float color[static 4]) {
-	assert(r->rendering);
-	r->impl->clear(r, color);
-}
-
-void wlr_renderer_scissor(struct wlr_renderer *r, struct wlr_box *box) {
-	assert(r->rendering);
-	r->impl->scissor(r, box);
-}
-
-bool wlr_render_texture(struct wlr_renderer *r, struct wlr_texture *texture,
-		const float projection[static 9], int x, int y, float alpha) {
-	struct wlr_box box = {
-		.x = x,
-		.y = y,
-		.width = texture->width,
-		.height = texture->height,
-	};
-
-	float matrix[9];
-	wlr_matrix_project_box(matrix, &box, WL_OUTPUT_TRANSFORM_NORMAL, 0,
-		projection);
-
-	return wlr_render_texture_with_matrix(r, texture, matrix, alpha);
-}
-
-bool wlr_render_texture_with_matrix(struct wlr_renderer *r,
-		struct wlr_texture *texture, const float matrix[static 9],
-		float alpha) {
-	struct wlr_fbox box = {
-		.x = 0,
-		.y = 0,
-		.width = texture->width,
-		.height = texture->height,
-	};
-	return wlr_render_subtexture_with_matrix(r, texture, &box, matrix, alpha);
-}
-
-bool wlr_render_subtexture_with_matrix(struct wlr_renderer *r,
-		struct wlr_texture *texture, const struct wlr_fbox *box,
-		const float matrix[static 9], float alpha) {
-	assert(r->rendering);
-	assert(texture->renderer == r);
-	return r->impl->render_subtexture_with_matrix(r, texture,
-		box, matrix, alpha);
-}
-
-void wlr_render_rect(struct wlr_renderer *r, const struct wlr_box *box,
-		const float color[static 4], const float projection[static 9]) {
-	if (box->width == 0 || box->height == 0) {
-		return;
-	}
-	assert(box->width > 0 && box->height > 0);
-	float matrix[9];
-	wlr_matrix_project_box(matrix, box, WL_OUTPUT_TRANSFORM_NORMAL, 0,
-		projection);
-
-	wlr_render_quad_with_matrix(r, color, matrix);
-}
-
-void wlr_render_quad_with_matrix(struct wlr_renderer *r,
-		const float color[static 4], const float matrix[static 9]) {
-	assert(r->rendering);
-	r->impl->render_quad_with_matrix(r, color, matrix);
-}
-
-const uint32_t *wlr_renderer_get_shm_texture_formats(struct wlr_renderer *r,
-		size_t *len) {
-	return r->impl->get_shm_texture_formats(r, len);
-}
-
-const struct wlr_drm_format_set *wlr_renderer_get_dmabuf_texture_formats(
-		struct wlr_renderer *r) {
-	if (!r->impl->get_dmabuf_texture_formats) {
-		return NULL;
-	}
-	return r->impl->get_dmabuf_texture_formats(r);
+const struct wlr_drm_format_set *wlr_renderer_get_texture_formats(
+		struct wlr_renderer *r, uint32_t buffer_caps) {
+	return r->impl->get_texture_formats(r, buffer_caps);
 }
 
 const struct wlr_drm_format_set *wlr_renderer_get_render_formats(
@@ -202,24 +71,9 @@ const struct wlr_drm_format_set *wlr_renderer_get_render_formats(
 	return r->impl->get_render_formats(r);
 }
 
-uint32_t renderer_get_render_buffer_caps(struct wlr_renderer *r) {
-	return r->impl->get_render_buffer_caps(r);
-}
-
-bool wlr_renderer_read_pixels(struct wlr_renderer *r, uint32_t fmt,
-		uint32_t stride, uint32_t width, uint32_t height,
-		uint32_t src_x, uint32_t src_y, uint32_t dst_x, uint32_t dst_y,
-		void *data) {
-	if (!r->impl->read_pixels) {
-		return false;
-	}
-	return r->impl->read_pixels(r, fmt, stride, width, height,
-		src_x, src_y, dst_x, dst_y, data);
-}
-
 bool wlr_renderer_init_wl_shm(struct wlr_renderer *r,
 		struct wl_display *wl_display) {
-	return wlr_shm_create_with_renderer(wl_display, 1, r) != NULL;
+	return wlr_shm_create_with_renderer(wl_display, 2, r) != NULL;
 }
 
 bool wlr_renderer_init_wl_display(struct wlr_renderer *r,
@@ -228,15 +82,10 @@ bool wlr_renderer_init_wl_display(struct wlr_renderer *r,
 		return false;
 	}
 
-	if (wlr_renderer_get_dmabuf_texture_formats(r) != NULL &&
-			wlr_renderer_get_drm_fd(r) >= 0) {
-		if (wlr_drm_create(wl_display, r) == NULL) {
-			return false;
-		}
-
-		if (wlr_linux_dmabuf_v1_create_with_renderer(wl_display, 4, r) == NULL) {
-			return false;
-		}
+	if (wlr_renderer_get_texture_formats(r, WLR_BUFFER_CAP_DMABUF) != NULL &&
+			wlr_renderer_get_drm_fd(r) >= 0 &&
+			wlr_linux_dmabuf_v1_create_with_renderer(wl_display, 4, r) == NULL) {
+		return false;
 	}
 
 	return true;
@@ -447,10 +296,6 @@ int wlr_renderer_get_drm_fd(struct wlr_renderer *r) {
 
 struct wlr_render_pass *wlr_renderer_begin_buffer_pass(struct wlr_renderer *renderer,
 		struct wlr_buffer *buffer, const struct wlr_buffer_pass_options *options) {
-	if (!renderer->impl->begin_buffer_pass) {
-		return begin_legacy_buffer_render_pass(renderer, buffer);
-	}
-
 	struct wlr_buffer_pass_options default_options = {0};
 	if (!options) {
 		options = &default_options;

@@ -16,10 +16,9 @@
 bool wlr_output_init_render(struct wlr_output *output,
 		struct wlr_allocator *allocator, struct wlr_renderer *renderer) {
 	assert(allocator != NULL && renderer != NULL);
-	assert(output->back_buffer == NULL);
 
 	uint32_t backend_caps = backend_get_buffer_caps(output->backend);
-	uint32_t renderer_caps = renderer_get_render_buffer_caps(renderer);
+	uint32_t renderer_caps = renderer->render_buffer_caps;
 
 	if (!(backend_caps & allocator->buffer_caps)) {
 		wlr_log(WLR_ERROR, "output backend and allocator buffer capabilities "
@@ -43,46 +42,6 @@ bool wlr_output_init_render(struct wlr_output *output,
 	return true;
 }
 
-void output_clear_back_buffer(struct wlr_output *output) {
-	if (output->back_buffer == NULL) {
-		return;
-	}
-
-	struct wlr_renderer *renderer = output->renderer;
-	assert(renderer != NULL);
-
-	renderer_bind_buffer(renderer, NULL);
-
-	wlr_buffer_unlock(output->back_buffer);
-	output->back_buffer = NULL;
-}
-
-bool wlr_output_attach_render(struct wlr_output *output, int *buffer_age) {
-	assert(output->back_buffer == NULL);
-
-	if (!wlr_output_configure_primary_swapchain(output, &output->pending,
-			&output->swapchain)) {
-		return false;
-	}
-
-	struct wlr_renderer *renderer = output->renderer;
-	assert(renderer != NULL);
-
-	struct wlr_buffer *buffer =
-		wlr_swapchain_acquire(output->swapchain, buffer_age);
-	if (buffer == NULL) {
-		return false;
-	}
-
-	if (!renderer_bind_buffer(renderer, buffer)) {
-		wlr_buffer_unlock(buffer);
-		return false;
-	}
-
-	output->back_buffer = buffer;
-	return true;
-}
-
 static struct wlr_buffer *output_acquire_empty_buffer(struct wlr_output *output,
 		const struct wlr_output_state *state) {
 	assert(!(state->committed & WLR_OUTPUT_STATE_BUFFER));
@@ -93,12 +52,12 @@ static struct wlr_buffer *output_acquire_empty_buffer(struct wlr_output *output,
 	// wlr_output_test_state(), which will prevent us from being called.
 	if (!wlr_output_configure_primary_swapchain(output, state,
 			&output->swapchain)) {
-		return false;
+		return NULL;
 	}
 
 	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain, NULL);
 	if (buffer == NULL) {
-		return false;
+		return NULL;
 	}
 
 	struct wlr_render_pass *pass =
@@ -239,27 +198,9 @@ bool output_pick_format(struct wlr_output *output,
 	return true;
 }
 
-uint32_t wlr_output_preferred_read_format(struct wlr_output *output) {
-	struct wlr_renderer *renderer = output->renderer;
-	assert(renderer != NULL);
-
-	if (!renderer->impl->preferred_read_format || !renderer->impl->read_pixels) {
-		return DRM_FORMAT_INVALID;
-	}
-
-	if (!wlr_output_attach_render(output, NULL)) {
-		return false;
-	}
-
-	uint32_t fmt = renderer->impl->preferred_read_format(renderer);
-
-	output_clear_back_buffer(output);
-
-	return fmt;
-}
-
 struct wlr_render_pass *wlr_output_begin_render_pass(struct wlr_output *output,
-		struct wlr_output_state *state, int *buffer_age, struct wlr_render_timer *timer) {
+		struct wlr_output_state *state, int *buffer_age,
+		struct wlr_buffer_pass_options *render_options) {
 	if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) {
 		return NULL;
 	}
@@ -271,10 +212,7 @@ struct wlr_render_pass *wlr_output_begin_render_pass(struct wlr_output *output,
 
 	struct wlr_renderer *renderer = output->renderer;
 	assert(renderer != NULL);
-	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, buffer,
-			&(struct wlr_buffer_pass_options){
-		.timer = timer,
-	});
+	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, buffer, render_options);
 	if (pass == NULL) {
 		return NULL;
 	}

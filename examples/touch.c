@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
 #include <drm_fourcc.h>
 #include <math.h>
 #include <stdint.h>
@@ -15,7 +14,6 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_touch.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
@@ -275,7 +273,7 @@ int main(int argc, char *argv[]) {
 	wl_list_init(&state.touch_points);
 	wl_list_init(&state.touch);
 
-	struct wlr_backend *wlr = wlr_backend_autocreate(display, NULL);
+	struct wlr_backend *wlr = wlr_backend_autocreate(wl_display_get_event_loop(display), NULL);
 	if (!wlr) {
 		exit(1);
 	}

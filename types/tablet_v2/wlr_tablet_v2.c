@@ -1,7 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
-
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +8,7 @@
 #include <wlr/types/wlr_tablet_tool.h>
 #include <wlr/types/wlr_tablet_v2.h>
 #include <wlr/util/log.h>
-#include "tablet-unstable-v2-protocol.h"
+#include "tablet-v2-protocol.h"
 
 #define TABLET_MANAGER_VERSION 1
 
@@ -275,6 +271,12 @@ static void handle_display_destroy(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, manager, display_destroy);
 	wl_signal_emit_mutable(&manager->events.destroy, manager);
 	wl_list_remove(&manager->display_destroy.link);
+
+	struct wlr_tablet_seat_v2 *seat, *tmp;
+	wl_list_for_each_safe(seat, tmp, &manager->seats, link) {
+		tablet_seat_destroy(seat);
+	}
+
 	wl_global_destroy(manager->wl_global);
 	free(manager);
 }

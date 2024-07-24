@@ -1,3 +1,9 @@
+wlroots (0.18.0-1deepin1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- rewine <luhongxu@deepin.org>  Wed, 24 Jul 2024 16:15:06 +0800
+
 wlroots (0.17.2-1deepin1) unstable; urgency=medium
 
   * Add deepin patchs

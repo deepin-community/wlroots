@@ -1,0 +1,257 @@
+From 80390d49cd40d7fc71f963cd9ee3fd1d5c8a09b5 Mon Sep 17 00:00:00 2001
+From: rewine <luhongxu@deepin.org>
+Date: Wed, 24 Jul 2024 16:21:54 +0800
+Subject: [PATCH 1/5] Revert "backend/drm: add support for SIZE_HINTS property"
+
+This reverts commit a35b4f059d0fb8a3a88853eda41e6111d42b6e38.
+---
+ backend/drm/drm.c                   | 81 +++--------------------------
+ backend/drm/properties.c            |  1 -
+ include/backend/drm/drm.h           |  3 --
+ include/backend/drm/properties.h    |  1 -
+ include/wlr/interfaces/wlr_output.h | 11 ++--
+ meson.build                         |  2 +-
+ types/output/cursor.c               | 24 ++-------
+ 7 files changed, 17 insertions(+), 106 deletions(-)
+
+diff --git a/backend/drm/drm.c b/backend/drm/drm.c
+index 5756f289..2f4a74d1 100644
+--- a/backend/drm/drm.c
++++ b/backend/drm/drm.c
+@@ -135,26 +135,6 @@ bool check_drm_features(struct wlr_drm_backend *drm) {
+ 	return true;
+ }
+ 
+-static bool init_plane_cursor_sizes(struct wlr_drm_plane *plane,
+-		const struct drm_plane_size_hint *hints, size_t hints_len) {
+-	assert(hints_len > 0);
+-	plane->cursor_sizes = calloc(hints_len, sizeof(plane->cursor_sizes[0]));
+-	if (plane->cursor_sizes == NULL) {
+-		return false;
+-	}
+-	plane->cursor_sizes_len = hints_len;
+-
+-	for (size_t i = 0; i < hints_len; i++) {
+-		const struct drm_plane_size_hint hint = hints[i];
+-		plane->cursor_sizes[i] = (struct wlr_output_cursor_size){
+-			.width = hint.width,
+-			.height = hint.height,
+-		};
+-	}
+-
+-	return true;
+-}
+-
+ static bool init_plane(struct wlr_drm_backend *drm,
+ 		struct wlr_drm_plane *p, const drmModePlane *drm_plane) {
+ 	uint32_t id = drm_plane->plane_id;
+@@ -206,37 +186,6 @@ static bool init_plane(struct wlr_drm_backend *drm,
+ 		drmModeFreePropertyBlob(blob);
+ 	}
+ 
+-	uint64_t size_hints_blob_id = 0;
+-	if (p->props.size_hints) {
+-		if (!get_drm_prop(drm->fd, p->id, p->props.size_hints, &size_hints_blob_id)) {
+-			wlr_log(WLR_ERROR, "Failed to read SIZE_HINTS property");
+-			return false;
+-		}
+-	}
+-	if (size_hints_blob_id != 0) {
+-		drmModePropertyBlobRes *blob = drmModeGetPropertyBlob(drm->fd, size_hints_blob_id);
+-		if (!blob) {
+-			wlr_log(WLR_ERROR, "Failed to read SIZE_HINTS blob");
+-			return false;
+-		}
+-
+-		const struct drm_plane_size_hint *size_hints = blob->data;
+-		size_t size_hints_len = blob->length / sizeof(size_hints[0]);
+-		if (!init_plane_cursor_sizes(p, size_hints, size_hints_len)) {
+-			return false;
+-		}
+-
+-		drmModeFreePropertyBlob(blob);
+-	} else {
+-		const struct drm_plane_size_hint size_hint = {
+-			.width = drm->cursor_width,
+-			.height = drm->cursor_height,
+-		};
+-		if (!init_plane_cursor_sizes(p, &size_hint, 1)) {
+-			return false;
+-		}
+-	}
+-
+ 	assert(drm->num_crtcs <= 32);
+ 	for (size_t j = 0; j < drm->num_crtcs; j++) {
+ 		uint32_t crtc_bit = 1 << j;
+@@ -1054,15 +1003,8 @@ static bool drm_connector_set_cursor(struct wlr_output *output,
+ 	conn->cursor_enabled = false;
+ 	drm_fb_clear(&conn->cursor_pending_fb);
+ 	if (buffer != NULL) {
+-		bool found = false;
+-		for (size_t i = 0; i < plane->cursor_sizes_len; i++) {
+-			struct wlr_output_cursor_size size = plane->cursor_sizes[i];
+-			if (size.width == buffer->width && size.height == buffer->height) {
+-				found = true;
+-				break;
+-			}
+-		}
+-		if (!found) {
++		if ((uint64_t)buffer->width != drm->cursor_width ||
++				(uint64_t)buffer->height != drm->cursor_height) {
+ 			wlr_drm_conn_log(conn, WLR_DEBUG, "Cursor buffer size mismatch");
+ 			return false;
+ 		}
+@@ -1188,18 +1130,11 @@ static const struct wlr_drm_format_set *drm_connector_get_cursor_formats(
+ 	return &plane->formats;
+ }
+ 
+-static const struct wlr_output_cursor_size *drm_connector_get_cursor_sizes(struct wlr_output *output,
+-		size_t *len) {
+-	struct wlr_drm_connector *conn = get_drm_connector_from_output(output);
+-	if (!drm_connector_alloc_crtc(conn)) {
+-		return NULL;
+-	}
+-	struct wlr_drm_plane *plane = conn->crtc->cursor;
+-	if (!plane) {
+-		return NULL;
+-	}
+-	*len = plane->cursor_sizes_len;
+-	return plane->cursor_sizes;
++static void drm_connector_get_cursor_size(struct wlr_output *output,
++		int *width, int *height) {
++	struct wlr_drm_backend *drm = get_drm_backend_from_backend(output->backend);
++	*width = (int)drm->cursor_width;
++	*height = (int)drm->cursor_height;
+ }
+ 
+ static const struct wlr_drm_format_set *drm_connector_get_primary_formats(
+@@ -1225,7 +1160,7 @@ static const struct wlr_output_impl output_impl = {
+ 	.commit = drm_connector_commit,
+ 	.get_gamma_size = drm_connector_get_gamma_size,
+ 	.get_cursor_formats = drm_connector_get_cursor_formats,
+-	.get_cursor_sizes = drm_connector_get_cursor_sizes,
++	.get_cursor_size = drm_connector_get_cursor_size,
+ 	.get_primary_formats = drm_connector_get_primary_formats,
+ };
+ 
+diff --git a/backend/drm/properties.c b/backend/drm/properties.c
+index d78bfaf6..9223fab6 100644
+--- a/backend/drm/properties.c
++++ b/backend/drm/properties.c
+@@ -56,7 +56,6 @@ static const struct prop_info plane_info[] = {
+ 	{ "HOTSPOT_X", INDEX(hotspot_x) },
+ 	{ "HOTSPOT_Y", INDEX(hotspot_y) },
+ 	{ "IN_FORMATS", INDEX(in_formats) },
+-	{ "SIZE_HINTS", INDEX(size_hints) },
+ 	{ "SRC_H", INDEX(src_h) },
+ 	{ "SRC_W", INDEX(src_w) },
+ 	{ "SRC_X", INDEX(src_x) },
+diff --git a/include/backend/drm/drm.h b/include/backend/drm/drm.h
+index 1106e9f5..d154d37f 100644
+--- a/include/backend/drm/drm.h
++++ b/include/backend/drm/drm.h
+@@ -29,9 +29,6 @@ struct wlr_drm_plane {
+ 
+ 	struct wlr_drm_format_set formats;
+ 
+-	struct wlr_output_cursor_size *cursor_sizes;
+-	size_t cursor_sizes_len;
+-
+ 	struct wlr_drm_plane_props props;
+ 
+ 	uint32_t initial_crtc_id;
+diff --git a/include/backend/drm/properties.h b/include/backend/drm/properties.h
+index 57073702..c039065a 100644
+--- a/include/backend/drm/properties.h
++++ b/include/backend/drm/properties.h
+@@ -44,7 +44,6 @@ struct wlr_drm_plane_props {
+ 	uint32_t type;
+ 	uint32_t rotation; // Not guaranteed to exist
+ 	uint32_t in_formats; // Not guaranteed to exist
+-	uint32_t size_hints; // Not guaranteed to exist
+ 
+ 	// atomic-modesetting only
+ 
+diff --git a/include/wlr/interfaces/wlr_output.h b/include/wlr/interfaces/wlr_output.h
+index 2a40a0fe..b5123475 100644
+--- a/include/wlr/interfaces/wlr_output.h
++++ b/include/wlr/interfaces/wlr_output.h
+@@ -25,10 +25,6 @@
+ 	WLR_OUTPUT_STATE_SUBPIXEL | \
+ 	WLR_OUTPUT_STATE_LAYERS)
+ 
+-struct wlr_output_cursor_size {
+-	int width, height;
+-};
+-
+ /**
+  * A backend implementation of struct wlr_output.
+  *
+@@ -86,11 +82,10 @@ struct wlr_output_impl {
+ 	const struct wlr_drm_format_set *(*get_cursor_formats)(
+ 		struct wlr_output *output, uint32_t buffer_caps);
+ 	/**
+-	 * Get the list of sizes suitable for the cursor buffer. Attempts to use a
+-	 * different size for the cursor may fail.
++	 * Get the size suitable for the cursor buffer. Attempts to use a different
++	 * size for the cursor may fail.
+ 	 */
+-	const struct wlr_output_cursor_size *(*get_cursor_sizes)(struct wlr_output *output,
+-		size_t *len);
++	void (*get_cursor_size)(struct wlr_output *output, int *width, int *height);
+ 	/**
+ 	 * Get the list of DRM formats suitable for the primary buffer,
+ 	 * assuming a buffer with the specified capabilities.
+diff --git a/meson.build b/meson.build
+index c28bb772..c9c74f9b 100644
+--- a/meson.build
++++ b/meson.build
+@@ -111,7 +111,7 @@ wayland_server = dependency('wayland-server',
+ )
+ 
+ drm = dependency('libdrm',
+-	version: '>=2.4.122',
++	version: '>=2.4.120',
+ 	fallback: 'libdrm',
+ 	default_options: [
+ 		'auto_features=disabled',
+diff --git a/types/output/cursor.c b/types/output/cursor.c
+index 2bf78528..4d5a3706 100644
+--- a/types/output/cursor.c
++++ b/types/output/cursor.c
+@@ -196,27 +196,13 @@ static struct wlr_buffer *render_cursor_buffer(struct wlr_output_cursor *cursor)
+ 
+ 	int width = cursor->width;
+ 	int height = cursor->height;
+-	if (output->impl->get_cursor_sizes) {
++	if (output->impl->get_cursor_size) {
+ 		// Apply hardware limitations on buffer size
+-		size_t sizes_len = 0;
+-		const struct wlr_output_cursor_size *sizes =
+-			output->impl->get_cursor_sizes(cursor->output, &sizes_len);
+-
+-		bool found = false;
+-		for (size_t i = 0; i < sizes_len; i++) {
+-			struct wlr_output_cursor_size size = sizes[i];
+-			if ((int)texture->width <= size.width && (int)texture->height <= size.height) {
+-				width = size.width;
+-				height = size.height;
+-				found = true;
+-				break;
+-			}
+-		}
+-
+-		if (!found) {
++		output->impl->get_cursor_size(cursor->output, &width, &height);
++		if ((int)texture->width > width || (int)texture->height > height) {
+ 			wlr_log(WLR_DEBUG, "Cursor texture too large (%dx%d), "
+-				"exceeds hardware limitations", texture->width,
+-				texture->height);
++				"exceeds hardware limitations (%dx%d)", texture->width,
++				texture->height, width, height);
+ 			return NULL;
+ 		}
+ 	}
+-- 
+2.44.0
+

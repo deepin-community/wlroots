@@ -9,16 +9,26 @@
 
 static const struct wlr_addon_interface addon_impl;
 
-struct wlr_output_layout *wlr_output_layout_create(void) {
+static void output_layout_handle_display_destroy(struct wl_listener *listener,
+		void *data) {
+	struct wlr_output_layout *layout = wl_container_of(listener, layout, display_destroy);
+	wlr_output_layout_destroy(layout);
+}
+
+struct wlr_output_layout *wlr_output_layout_create(struct wl_display *display) {
 	struct wlr_output_layout *layout = calloc(1, sizeof(*layout));
 	if (layout == NULL) {
 		return NULL;
 	}
 	wl_list_init(&layout->outputs);
+	layout->display = display;
 
 	wl_signal_init(&layout->events.add);
 	wl_signal_init(&layout->events.change);
 	wl_signal_init(&layout->events.destroy);
+
+	layout->display_destroy.notify = output_layout_handle_display_destroy;
+	wl_display_add_destroy_listener(display, &layout->display_destroy);
 
 	return layout;
 }
@@ -45,6 +55,7 @@ void wlr_output_layout_destroy(struct wlr_output_layout *layout) {
 		output_layout_output_destroy(l_output);
 	}
 
+	wl_list_remove(&layout->display_destroy.link);
 	free(layout);
 }
 
@@ -104,10 +115,11 @@ static void output_layout_reconfigure(struct wlr_output_layout *layout) {
 	wl_signal_emit_mutable(&layout->events.change, layout);
 }
 
-static void output_update_global(struct wlr_output *output) {
+static void output_update_global(struct wlr_output_layout *layout,
+		struct wlr_output *output) {
 	// Don't expose the output if it doesn't have a current mode
 	if (output->width > 0 && output->height > 0) {
-		wlr_output_create_global(output);
+		wlr_output_create_global(output, layout->display);
 	} else {
 		wlr_output_destroy_global(output);
 	}
@@ -122,7 +134,7 @@ static void handle_output_commit(struct wl_listener *listener, void *data) {
 			WLR_OUTPUT_STATE_TRANSFORM |
 			WLR_OUTPUT_STATE_MODE)) {
 		output_layout_reconfigure(l_output->layout);
-		output_update_global(l_output->output);
+		output_update_global(l_output->layout, l_output->output);
 	}
 }
 
@@ -182,7 +194,7 @@ static struct wlr_output_layout_output *output_layout_add(struct wlr_output_layo
 	l_output->auto_configured = auto_configured;
 
 	output_layout_reconfigure(layout);
-	output_update_global(output);
+	output_update_global(layout, output);
 
 	if (is_new) {
 		wl_signal_emit_mutable(&layout->events.add, l_output);

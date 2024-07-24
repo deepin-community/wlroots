@@ -1,5 +1,6 @@
+0001-Revert-backend-drm-add-support-for-SIZE_HINTS-proper.patch
+0002-Revert-backend-drm-add-support-for-atomic-tearing-pa.patch
+0003-Revert-shm-add-support-for-wl_shm-version-2.patch
+0004-Revert-backend-wayland-use-wl_shm.release-if-availab.patch
+0005-Relax-wayland-server-to-1.22.patch
 Revert-layer-shell-error-on-0-dimension-without-anchors.patch
-gles2-Avoid-crash-when-glGetInteger64vEXT-is-missing.patch
-emit-destroy-signal-in-destroy-function.patch
-init-destroy-signal.patch
-reset_hardware_cursor_on_failure.patch

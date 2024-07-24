@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
 #include <stdlib.h>
@@ -17,7 +16,6 @@
 #include <wlr/interfaces/wlr_pointer.h>
 #include <wlr/interfaces/wlr_touch.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/util/log.h>
 
 #include "backend/x11.h"
@@ -449,25 +447,26 @@ static bool output_cursor_to_picture(struct wlr_x11_output *output,
 		return true;
 	}
 
+	struct wlr_texture *texture = wlr_texture_from_buffer(renderer, buffer);
+	if (!texture) {
+		return false;
+	}
+
 	int depth = 32;
-	int stride = buffer->width * 4;
-
-	uint8_t *data = malloc(buffer->height * stride);
+	int stride = texture->width * 4;
+	uint8_t *data = malloc(texture->height * stride);
 	if (data == NULL) {
+		wlr_texture_destroy(texture);
 		return false;
 	}
 
-	if (!wlr_renderer_begin_with_buffer(renderer, buffer)) {
-		free(data);
-		return false;
-	}
+	bool result = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options) {
+		.format = DRM_FORMAT_ARGB8888,
+		.stride = stride,
+		.data = data,
+	});
 
-	bool result = wlr_renderer_read_pixels(
-		renderer, DRM_FORMAT_ARGB8888,
-		stride, buffer->width, buffer->height, 0, 0, 0, 0,
-		data);
-
-	wlr_renderer_end(renderer);
+	wlr_texture_destroy(texture);
 
 	if (!result) {
 		free(data);
@@ -575,7 +574,7 @@ struct wlr_output *wlr_x11_output_create(struct wlr_backend *backend) {
 	wlr_output_state_init(&state);
 	wlr_output_state_set_custom_mode(&state, 1024, 768, 0);
 
-	wlr_output_init(wlr_output, &x11->backend, &output_impl, x11->wl_display, &state);
+	wlr_output_init(wlr_output, &x11->backend, &output_impl, x11->event_loop, &state);
 	wlr_output_state_finish(&state);
 
 	size_t output_num = ++last_output_num;

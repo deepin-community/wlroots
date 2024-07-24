@@ -69,6 +69,9 @@ struct wlr_surface_state {
 	// Number of locks that prevent this surface state from being committed.
 	size_t cached_state_locks;
 	struct wl_list cached_state_link; // wlr_surface.cached
+
+	// Sync'ed object states, one per struct wlr_surface_synced
+	struct wl_array synced; // void *
 };
 
 struct wlr_surface_role {
@@ -78,6 +81,15 @@ struct wlr_surface_role {
 	 * For example, this applies to cursor surfaces.
 	 */
 	bool no_object;
+	/**
+	 * Called when the client sends the wl_surface.commit request. May be NULL.
+	 * Typically used to check that the pending state is valid, and send
+	 * protocol errors if not.
+	 *
+	 * If the role is represented by an object, this is only called if
+	 * such object exists.
+	 */
+	void (*client_commit)(struct wlr_surface *surface);
 	/**
 	 * Called when a new surface state is committed. May be NULL.
 	 *
@@ -109,7 +121,7 @@ struct wlr_surface_output {
 
 struct wlr_surface {
 	struct wl_resource *resource;
-	struct wlr_renderer *renderer; // may be NULL
+	struct wlr_compositor *compositor;
 	/**
 	 * The surface's buffer, if any. A surface has an attached buffer when it
 	 * commits with a non-null buffer in its pending state. A surface will not
@@ -129,11 +141,6 @@ struct wlr_surface {
 	 * positions need to be damaged.
 	 */
 	pixman_region32_t buffer_damage;
-	/**
-	 * The last commit's damage caused by surface and its subsurfaces'
-	 * movement, in surface-local coordinates.
-	 */
-	pixman_region32_t external_damage;
 	/**
 	 * The current opaque region, in surface-local coordinates. It is clipped to
 	 * the surface bounds. If the surface's buffer is using a fully opaque
@@ -174,7 +181,6 @@ struct wlr_surface {
 
 	struct {
 		struct wl_signal client_commit;
-		struct wl_signal precommit; // const struct wlr_surface_state *
 		struct wl_signal commit;
 
 		/**
@@ -190,7 +196,12 @@ struct wlr_surface {
 		 */
 		struct wl_signal unmap;
 
-		struct wl_signal new_subsurface;
+		/**
+		 * Note: unlike other new_* signals, new_subsurface is emitted when
+		 * the subsurface is added to the parent surface's current state,
+		 * not when the object is created.
+		 */
+		struct wl_signal new_subsurface; // struct wlr_subsurface
 		struct wl_signal destroy;
 	} events;
 
@@ -201,7 +212,6 @@ struct wlr_surface {
 
 	// private state
 
-	struct wl_listener renderer_destroy;
 	struct wl_listener role_resource_destroy;
 
 	struct {
@@ -214,11 +224,19 @@ struct wlr_surface {
 	bool unmap_commit;
 
 	bool opaque;
-	bool has_buffer;
+
+	bool handling_commit;
+	bool pending_rejected;
 
 	int32_t preferred_buffer_scale;
 	bool preferred_buffer_transform_sent;
 	enum wl_output_transform preferred_buffer_transform;
+
+	struct wl_list synced; // wlr_surface_synced.link
+	size_t synced_len;
+
+	struct wl_resource *pending_buffer_resource;
+	struct wl_listener pending_buffer_resource_destroy;
 };
 
 struct wlr_renderer;
@@ -228,6 +246,7 @@ struct wlr_compositor {
 	struct wlr_renderer *renderer; // may be NULL
 
 	struct wl_listener display_destroy;
+	struct wl_listener renderer_destroy;
 
 	struct {
 		struct wl_signal new_surface;
@@ -273,12 +292,34 @@ void wlr_surface_map(struct wlr_surface *surface);
 void wlr_surface_unmap(struct wlr_surface *surface);
 
 /**
+ * Mark the pending state of a surface as rejected due to a protocol violation,
+ * preventing it from being cached or committed.
+ *
+ * This function must only be used while processing a commit request.
+ */
+void wlr_surface_reject_pending(struct wlr_surface *surface, struct wl_resource *resource,
+	uint32_t code, const char *msg, ...);
+
+/**
  * Whether or not this surface currently has an attached buffer. A surface has
  * an attached buffer when it commits with a non-null buffer in its pending
- * state. A surface will not have a buffer if it has never committed one, has
- * committed a null buffer, or something went wrong with uploading the buffer.
+ * state. A surface will not have a buffer if it has never committed one or has
+ * committed a null buffer.
  */
 bool wlr_surface_has_buffer(struct wlr_surface *surface);
+
+/**
+ * Check whether this surface state has an attached buffer.
+ *
+ * A surface has an attached buffer when the client commits with a non-null
+ * buffer. A surface will not have a buffer if the client never committed one,
+ * or committed a null buffer.
+ *
+ * Note that wlr_surface_state.buffer may be NULL even if this function returns
+ * true: the buffer field is reset after commit, to allow the buffer to be
+ * released to the client. Additionally, the buffer import or upload may fail.
+ */
+bool wlr_surface_state_has_buffer(const struct wlr_surface_state *state);
 
 /**
  * Get the texture of the buffer currently attached to this surface. Returns
@@ -288,8 +329,9 @@ bool wlr_surface_has_buffer(struct wlr_surface *surface);
 struct wlr_texture *wlr_surface_get_texture(struct wlr_surface *surface);
 
 /**
- * Get the root of the subsurface tree for this surface. Can return NULL if
- * a surface in the tree has been destroyed.
+ * Get the root of the subsurface tree for this surface.
+ * May return the same surface passed if that surface is the root.
+ * Never returns NULL.
  */
 struct wlr_surface *wlr_surface_get_root_surface(struct wlr_surface *surface);
 
@@ -358,10 +400,7 @@ void wlr_surface_for_each_surface(struct wlr_surface *surface,
 	wlr_surface_iterator_func_t iterator, void *user_data);
 
 /**
- * Get the effective surface damage in surface-local coordinate space. Besides
- * buffer damage, this includes damage induced by resizing and moving the
- * surface and its subsurfaces. The resulting damage is not expected to be
- * bounded by the surface itself.
+ * Get the effective surface damage in surface-local coordinate space.
  */
 void wlr_surface_get_effective_damage(struct wlr_surface *surface,
 	pixman_region32_t *damage);
@@ -415,6 +454,68 @@ void wlr_surface_set_preferred_buffer_transform(struct wlr_surface *surface,
 	enum wl_output_transform transform);
 
 /**
+ * Implementation for struct wlr_surface_synced.
+ *
+ * struct wlr_surface takes care of allocating the sync'ed object state.
+ *
+ * The only mandatory field is state_size.
+ */
+struct wlr_surface_synced_impl {
+	// Size in bytes of the state struct.
+	size_t state_size;
+	// Initialize a state. If NULL, this is a no-op.
+	void (*init_state)(void *state);
+	// Finish a state. If NULL, this is a no-op.
+	void (*finish_state)(void *state);
+	// Move a state. If NULL, memcpy() is used.
+	void (*move_state)(void *dst, void *src);
+};
+
+/**
+ * An object synchronized with a surface.
+ *
+ * This is typically used by surface add-ons which integrate with the surface
+ * commit mechanism.
+ *
+ * A sync'ed object maintains state whose lifecycle is managed by
+ * struct wlr_surface_synced_impl. Clients make requests to mutate the pending
+ * state, then clients commit the pending state via wl_surface.commit. The
+ * pending state may become cached, then becomes current when it's applied.
+ */
+struct wlr_surface_synced {
+	struct wlr_surface *surface;
+	const struct wlr_surface_synced_impl *impl;
+	struct wl_list link; // wlr_surface.synced
+	size_t index;
+};
+
+/**
+ * Initialize a sync'ed object.
+ *
+ * pending and current must be pointers to the sync'ed object's state. This
+ * function will initialize them.
+ */
+bool wlr_surface_synced_init(struct wlr_surface_synced *synced,
+	struct wlr_surface *surface, const struct wlr_surface_synced_impl *impl,
+	void *pending, void *current);
+/**
+ * Finish a sync'ed object.
+ *
+ * This must be called before the struct wlr_surface is destroyed.
+ */
+void wlr_surface_synced_finish(struct wlr_surface_synced *synced);
+/**
+ * Obtain a sync'ed object state.
+ */
+void *wlr_surface_synced_get_state(struct wlr_surface_synced *synced,
+	const struct wlr_surface_state *state);
+
+/**
+ * Get a Pixman region from a wl_region resource.
+ */
+const pixman_region32_t *wlr_region_from_resource(struct wl_resource *resource);
+
+/**
  * Create the wl_compositor global, which can be used by clients to create
  * surfaces and regions.
  *
@@ -423,5 +524,17 @@ void wlr_surface_set_preferred_buffer_transform(struct wlr_surface *surface,
  */
 struct wlr_compositor *wlr_compositor_create(struct wl_display *display,
 	uint32_t version, struct wlr_renderer *renderer);
+
+/**
+ * Set the renderer used for creating struct wlr_texture objects from client
+ * buffers on surface commit.
+ *
+ * The renderer may be NULL, in which case no textures are created.
+ *
+ * Calling this function does not update existing textures, it only affects
+ * future surface commits.
+ */
+void wlr_compositor_set_renderer(struct wlr_compositor *compositor,
+	struct wlr_renderer *renderer);
 
 #endif

@@ -1,0 +1,43 @@
+From 52417ac40f89919e7a2b1ccbefe507f7efa068b7 Mon Sep 17 00:00:00 2001
+From: rewine <luhongxu@deepin.org>
+Date: Wed, 24 Jul 2024 16:23:33 +0800
+Subject: [PATCH 4/5] Revert "backend/wayland: use wl_shm.release if available"
+
+This reverts commit 0028e0638f4b966d9a97007da7e57bd40aecc972.
+---
+ backend/wayland/backend.c | 12 ++----------
+ 1 file changed, 2 insertions(+), 10 deletions(-)
+
+diff --git a/backend/wayland/backend.c b/backend/wayland/backend.c
+index c2b2f2fa..b0bce786 100644
+--- a/backend/wayland/backend.c
++++ b/backend/wayland/backend.c
+@@ -393,11 +393,7 @@ static void registry_global(void *data, struct wl_registry *registry,
+ 		wl->legacy_drm = wl_registry_bind(registry, name, &wl_drm_interface, 1);
+ 		wl_drm_add_listener(wl->legacy_drm, &legacy_drm_listener, wl);
+ 	} else if (strcmp(iface, wl_shm_interface.name) == 0) {
+-		uint32_t target_version = version;
+-		if (version > 2) {
+-			target_version = 2;
+-		}
+-		wl->shm = wl_registry_bind(registry, name, &wl_shm_interface, target_version);
++		wl->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+ 		wl_shm_add_listener(wl->shm, &shm_listener, wl);
+ 	} else if (strcmp(iface, xdg_activation_v1_interface.name) == 0) {
+ 		wl->activation_v1 = wl_registry_bind(registry, name,
+@@ -519,11 +515,7 @@ static void backend_destroy(struct wlr_backend *backend) {
+ 		wl_drm_destroy(wl->legacy_drm);
+ 	}
+ 	if (wl->shm) {
+-		if (wl_shm_get_version(wl->shm) >= WL_SHM_RELEASE_SINCE_VERSION) {
+-			wl_shm_release(wl->shm);
+-		} else {
+-			wl_shm_destroy(wl->shm);
+-		}
++		wl_shm_destroy(wl->shm);
+ 	}
+ 	if (wl->zwp_relative_pointer_manager_v1) {
+ 		zwp_relative_pointer_manager_v1_destroy(wl->zwp_relative_pointer_manager_v1);
+-- 
+2.44.0
+

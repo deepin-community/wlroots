@@ -1,4 +1,4 @@
-#include <wlr/types/wlr_output.h>
+#include <wlr/util/transform.h>
 
 enum wl_output_transform wlr_output_transform_invert(
 		enum wl_output_transform tr) {
@@ -22,4 +22,12 @@ enum wl_output_transform wlr_output_transform_compose(
 		rotated = (tr_a + tr_b) & rotation_mask;
 	}
 	return flipped | rotated;
+}
+
+void wlr_output_transform_coords(enum wl_output_transform tr, int *x, int *y) {
+	if (tr & WL_OUTPUT_TRANSFORM_90) {
+		int tmp = *x;
+		*x = *y;
+		*y = tmp;
+	}
 }

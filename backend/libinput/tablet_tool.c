@@ -1,7 +1,7 @@
-#define _POSIX_C_SOURCE 200809L
 #include <string.h>
 #include <assert.h>
 #include <libinput.h>
+#include <linux/input.h>
 #include <stdlib.h>
 #include <wlr/interfaces/wlr_tablet_tool.h>
 #include <wlr/util/log.h>
@@ -18,11 +18,17 @@ const struct wlr_tablet_impl libinput_tablet_impl = {
 };
 
 void init_device_tablet(struct wlr_libinput_input_device *dev) {
-	const char *name = libinput_device_get_name(dev->handle);
+	const char *name = get_libinput_device_name(dev->handle);
 	struct wlr_tablet *wlr_tablet = &dev->tablet;
 	wlr_tablet_init(wlr_tablet, &libinput_tablet_impl, name);
-	wlr_tablet->base.vendor = libinput_device_get_id_vendor(dev->handle);
-	wlr_tablet->base.product = libinput_device_get_id_product(dev->handle);
+
+#if HAVE_LIBINPUT_BUSTYPE
+	if (libinput_device_get_id_bustype(dev->handle) == BUS_USB)
+#endif
+	{
+		wlr_tablet->usb_vendor_id = libinput_device_get_id_vendor(dev->handle);
+		wlr_tablet->usb_product_id = libinput_device_get_id_product(dev->handle);
+	}
 
 	libinput_device_get_size(dev->handle, &wlr_tablet->width_mm,
 		&wlr_tablet->height_mm);

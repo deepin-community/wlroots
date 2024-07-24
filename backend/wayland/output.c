@@ -8,20 +8,18 @@
 #include <unistd.h>
 
 #include <drm_fourcc.h>
-#include <wayland-client.h>
+#include <wayland-client-protocol.h>
 
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output_layer.h>
 #include <wlr/util/log.h>
 
 #include "backend/wayland.h"
 #include "render/pixel_format.h"
-#include "render/wlr_renderer.h"
 #include "types/wlr_output.h"
 
-#include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "linux-dmabuf-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
@@ -262,6 +260,40 @@ static struct wlr_wl_buffer *get_or_create_wl_buffer(struct wlr_wl_backend *wl,
 	}
 
 	return create_wl_buffer(wl, wlr_buffer);
+}
+
+static bool update_title(struct wlr_wl_output *output, const char *title) {
+	struct wlr_output *wlr_output = &output->wlr_output;
+
+	char default_title[64];
+	if (title == NULL) {
+		snprintf(default_title, sizeof(default_title), "wlroots - %s", wlr_output->name);
+		title = default_title;
+	}
+
+	char *wl_title = strdup(title);
+	if (wl_title == NULL) {
+		return false;
+	}
+
+	free(output->title);
+	output->title = wl_title;
+	return true;
+}
+
+static bool update_app_id(struct wlr_wl_output *output, const char *app_id) {
+	if (app_id == NULL) {
+		app_id = "wlroots";
+	}
+
+	char *wl_app_id = strdup(app_id);
+	if (wl_app_id == NULL) {
+		return false;
+	}
+
+	free(output->app_id);
+	output->app_id = wl_app_id;
+	return true;
 }
 
 static bool output_test(struct wlr_output *wlr_output,
@@ -522,6 +554,17 @@ static bool commit_layers(struct wlr_wl_output *output,
 	return true;
 }
 
+static void unmap_callback_handle_done(void *data, struct wl_callback *callback,
+		uint32_t cb_data) {
+	struct wlr_wl_output *output = data;
+	output->unmap_callback = NULL;
+	wl_callback_destroy(callback);
+}
+
+static const struct wl_callback_listener unmap_callback_listener = {
+	.done = unmap_callback_handle_done,
+};
+
 static bool output_commit(struct wlr_output *wlr_output,
 		const struct wlr_output_state *state) {
 	struct wlr_wl_output *output =
@@ -531,9 +574,37 @@ static bool output_commit(struct wlr_output *wlr_output,
 		return false;
 	}
 
-	if ((state->committed & WLR_OUTPUT_STATE_ENABLED) && !state->enabled) {
+	bool pending_enabled = output_pending_enabled(wlr_output, state);
+
+	if (wlr_output->enabled && !pending_enabled) {
+		if (output->own_surface) {
+			output->unmap_callback = wl_display_sync(output->backend->remote_display);
+			if (output->unmap_callback == NULL) {
+				return false;
+			}
+			wl_callback_add_listener(output->unmap_callback, &unmap_callback_listener, output);
+		}
+
 		wl_surface_attach(output->surface, NULL, 0, 0);
 		wl_surface_commit(output->surface);
+
+		output->initialized = false;
+		output->configured = false;
+		output->has_configure_serial = false;
+		output->requested_width = output->requested_height = 0;
+	} else if (output->own_surface && pending_enabled && !output->initialized) {
+		xdg_toplevel_set_title(output->xdg_toplevel, output->title);
+		xdg_toplevel_set_app_id(output->xdg_toplevel, output->app_id);
+		wl_surface_commit(output->surface);
+		output->initialized = true;
+
+		wl_display_flush(output->backend->remote_display);
+		while (!output->configured) {
+			if (wl_display_dispatch(output->backend->remote_display) == -1) {
+				wlr_log(WLR_ERROR, "wl_display_dispatch() failed");
+				return false;
+			}
+		}
 	}
 
 	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
@@ -558,7 +629,7 @@ static bool output_commit(struct wlr_output *wlr_output,
 		return false;
 	}
 
-	if (output_pending_enabled(wlr_output, state)) {
+	if (pending_enabled) {
 		if (output->frame_callback != NULL) {
 			wl_callback_destroy(output->frame_callback);
 		}
@@ -569,6 +640,11 @@ static bool output_commit(struct wlr_output *wlr_output,
 		if (output->backend->presentation != NULL) {
 			wp_feedback = wp_presentation_feedback(output->backend->presentation,
 				output->surface);
+		}
+
+		if (output->has_configure_serial) {
+			xdg_surface_ack_configure(output->xdg_surface, output->configure_serial);
+			output->has_configure_serial = false;
 		}
 
 		wl_surface_commit(output->surface);
@@ -668,6 +744,10 @@ static void output_destroy(struct wlr_output *wlr_output) {
 		presentation_feedback_destroy(feedback);
 	}
 
+	if (output->unmap_callback) {
+		wl_callback_destroy(output->unmap_callback);
+	}
+
 	if (output->zxdg_toplevel_decoration_v1) {
 		zxdg_toplevel_decoration_v1_destroy(output->zxdg_toplevel_decoration_v1);
 	}
@@ -681,6 +761,10 @@ static void output_destroy(struct wlr_output *wlr_output) {
 		wl_surface_destroy(output->surface);
 	}
 	wl_display_flush(output->backend->remote_display);
+
+	free(output->title);
+	free(output->app_id);
+
 	free(output);
 }
 
@@ -721,10 +805,30 @@ static void xdg_surface_handle_configure(void *data,
 	struct wlr_wl_output *output = data;
 	assert(output && output->xdg_surface == xdg_surface);
 
-	output->configured = true;
-	xdg_surface_ack_configure(xdg_surface, serial);
+	int32_t req_width = output->wlr_output.width;
+	int32_t req_height = output->wlr_output.height;
+	if (output->requested_width > 0) {
+		req_width = output->requested_width;
+		output->requested_width = 0;
+	}
+	if (output->requested_height > 0) {
+		req_height = output->requested_height;
+		output->requested_height = 0;
+	}
 
-	// nothing else?
+	if (output->unmap_callback != NULL) {
+		return;
+	}
+
+	output->configured = true;
+	output->has_configure_serial = true;
+	output->configure_serial = serial;
+
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_state_set_custom_mode(&state, req_width, req_height, 0);
+	wlr_output_send_request_state(&output->wlr_output, &state);
+	wlr_output_state_finish(&state);
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -737,15 +841,12 @@ static void xdg_toplevel_handle_configure(void *data,
 	struct wlr_wl_output *output = data;
 	assert(output && output->xdg_toplevel == xdg_toplevel);
 
-	if (width == 0 || height == 0) {
-		return;
+	if (width > 0) {
+		output->requested_width = width;
 	}
-
-	struct wlr_output_state state;
-	wlr_output_state_init(&state);
-	wlr_output_state_set_custom_mode(&state, width, height, 0);
-	wlr_output_send_request_state(&output->wlr_output, &state);
-	wlr_output_state_finish(&state);
+	if (height > 0) {
+		output->requested_height = height;
+	}
 }
 
 static void xdg_toplevel_handle_close(void *data,
@@ -775,7 +876,7 @@ static struct wlr_wl_output *output_create(struct wlr_wl_backend *backend,
 	wlr_output_state_set_custom_mode(&state, 1280, 720, 0);
 
 	wlr_output_init(wlr_output, &backend->backend, &output_impl,
-		backend->local_display, &state);
+		backend->event_loop, &state);
 	wlr_output_state_finish(&state);
 
 	wlr_output->adaptive_sync_status = WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED;
@@ -863,23 +964,21 @@ struct wlr_output *wlr_wl_output_create(struct wlr_backend *wlr_backend) {
 			ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 	}
 
-	wlr_wl_output_set_title(&output->wlr_output, NULL);
+	if (!update_title(output, NULL)) {
+		wlr_log_errno(WLR_ERROR, "Could not allocate xdg toplevel title");
+		goto error;
+	}
+	if (!update_app_id(output, NULL)) {
+		wlr_log_errno(WLR_ERROR, "Could not allocate xdg toplevel app_id");
+		goto error;
+	}
 
-	xdg_toplevel_set_app_id(output->xdg_toplevel, "wlroots");
 	xdg_surface_add_listener(output->xdg_surface,
 			&xdg_surface_listener, output);
 	xdg_toplevel_add_listener(output->xdg_toplevel,
 			&xdg_toplevel_listener, output);
-	wl_surface_commit(output->surface);
 
-	struct wl_event_loop *event_loop = wl_display_get_event_loop(backend->local_display);
-	while (!output->configured) {
-		int ret = wl_event_loop_dispatch(event_loop, -1);
-		if (ret < 0) {
-			wlr_log(WLR_ERROR, "wl_event_loop_dispatch() failed");
-			goto error;
-		}
-	}
+	wl_display_flush(backend->remote_display);
 
 	output_start(output);
 
@@ -916,16 +1015,20 @@ void wlr_wl_output_set_title(struct wlr_output *output, const char *title) {
 	struct wlr_wl_output *wl_output = get_wl_output_from_output(output);
 	assert(wl_output->xdg_toplevel != NULL);
 
-	char wl_title[32];
-	if (title == NULL) {
-		if (snprintf(wl_title, sizeof(wl_title), "wlroots - %s", output->name) <= 0) {
-			return;
-		}
-		title = wl_title;
+	if (update_title(wl_output, title) && wl_output->initialized) {
+		xdg_toplevel_set_title(wl_output->xdg_toplevel, wl_output->title);
+		wl_display_flush(wl_output->backend->remote_display);
 	}
+}
 
-	xdg_toplevel_set_title(wl_output->xdg_toplevel, title);
-	wl_display_flush(wl_output->backend->remote_display);
+void wlr_wl_output_set_app_id(struct wlr_output *output, const char *app_id) {
+	struct wlr_wl_output *wl_output = get_wl_output_from_output(output);
+	assert(wl_output->xdg_toplevel != NULL);
+
+	if (update_app_id(wl_output, app_id) && wl_output->initialized) {
+		xdg_toplevel_set_app_id(wl_output->xdg_toplevel, wl_output->app_id);
+		wl_display_flush(wl_output->backend->remote_display);
+	}
 }
 
 struct wl_surface *wlr_wl_output_get_surface(struct wlr_output *output) {

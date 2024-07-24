@@ -72,6 +72,7 @@ enum atom_name {
 	NET_WM_WINDOW_TYPE_MENU,
 	NET_WM_WINDOW_TYPE_NOTIFICATION,
 	NET_WM_WINDOW_TYPE_SPLASH,
+	NET_WM_WINDOW_TYPE_DESKTOP,
 	DND_SELECTION,
 	DND_AWARE,
 	DND_STATUS,
@@ -160,5 +161,9 @@ void xwm_set_seat(struct wlr_xwm *xwm, struct wlr_seat *seat);
 char *xwm_get_atom_name(struct wlr_xwm *xwm, xcb_atom_t atom);
 bool xwm_atoms_contains(struct wlr_xwm *xwm, xcb_atom_t *atoms,
 	size_t num_atoms, enum atom_name needle);
+
+xcb_void_cookie_t xwm_send_event_with_size(xcb_connection_t *c,
+	uint8_t propagate, xcb_window_t destination,
+	uint32_t event_mask, const void *event, uint32_t length);
 
 #endif

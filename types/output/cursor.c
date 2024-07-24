@@ -5,9 +5,9 @@
 #include <wlr/render/swapchain.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
+#include <wlr/util/transform.h>
 #include "render/allocator/allocator.h"
 #include "types/wlr_buffer.h"
 #include "types/wlr_output.h"
@@ -34,6 +34,16 @@ static bool output_set_hardware_cursor(struct wlr_output *output,
 
 static void output_cursor_damage_whole(struct wlr_output_cursor *cursor);
 
+static void output_disable_hardware_cursor(struct wlr_output *output) {
+	if (output->hardware_cursor == NULL) {
+		return;
+	}
+
+	output_set_hardware_cursor(output, NULL, 0, 0);
+	output_cursor_damage_whole(output->hardware_cursor);
+	output->hardware_cursor = NULL;
+}
+
 void wlr_output_lock_software_cursors(struct wlr_output *output, bool lock) {
 	if (lock) {
 		++output->software_cursor_locks;
@@ -45,36 +55,13 @@ void wlr_output_lock_software_cursors(struct wlr_output *output, bool lock) {
 		lock ? "Disabling" : "Enabling", output->name,
 		output->software_cursor_locks);
 
-	if (output->software_cursor_locks > 0 && output->hardware_cursor != NULL) {
-		output_set_hardware_cursor(output, NULL, 0, 0);
-		output_cursor_damage_whole(output->hardware_cursor);
-		output->hardware_cursor = NULL;
+	if (output->software_cursor_locks > 0) {
+		output_disable_hardware_cursor(output);
 	}
 
 	// If it's possible to use hardware cursors again, don't switch immediately
 	// since a recorder is likely to lock software cursors for the next frame
 	// again.
-}
-
-static void output_scissor(struct wlr_output *output, pixman_box32_t *rect) {
-	struct wlr_renderer *renderer = output->renderer;
-	assert(renderer);
-
-	struct wlr_box box = {
-		.x = rect->x1,
-		.y = rect->y1,
-		.width = rect->x2 - rect->x1,
-		.height = rect->y2 - rect->y1,
-	};
-
-	int ow, oh;
-	wlr_output_transformed_resolution(output, &ow, &oh);
-
-	enum wl_output_transform transform =
-		wlr_output_transform_invert(output->transform);
-	wlr_box_transform(&box, &box, transform, ow, oh);
-
-	wlr_renderer_scissor(renderer, &box);
 }
 
 /**
@@ -86,72 +73,6 @@ static void output_cursor_get_box(struct wlr_output_cursor *cursor,
 	box->y = cursor->y - cursor->hotspot_y;
 	box->width = cursor->width;
 	box->height = cursor->height;
-}
-
-static void output_cursor_render(struct wlr_output_cursor *cursor,
-		pixman_region32_t *damage) {
-	struct wlr_renderer *renderer = cursor->output->renderer;
-	assert(renderer);
-
-	struct wlr_texture *texture = cursor->texture;
-	if (texture == NULL) {
-		return;
-	}
-
-	struct wlr_box box;
-	output_cursor_get_box(cursor, &box);
-
-	pixman_region32_t surface_damage;
-	pixman_region32_init(&surface_damage);
-	pixman_region32_union_rect(&surface_damage, &surface_damage, box.x, box.y,
-		box.width, box.height);
-	pixman_region32_intersect(&surface_damage, &surface_damage, damage);
-	if (!pixman_region32_not_empty(&surface_damage)) {
-		goto surface_damage_finish;
-	}
-
-	float matrix[9];
-	wlr_matrix_project_box(matrix, &box, WL_OUTPUT_TRANSFORM_NORMAL, 0,
-		cursor->output->transform_matrix);
-
-	int nrects;
-	pixman_box32_t *rects = pixman_region32_rectangles(&surface_damage, &nrects);
-	for (int i = 0; i < nrects; ++i) {
-		output_scissor(cursor->output, &rects[i]);
-		wlr_render_texture_with_matrix(renderer, texture, matrix, 1.0f);
-	}
-	wlr_renderer_scissor(renderer, NULL);
-
-surface_damage_finish:
-	pixman_region32_fini(&surface_damage);
-}
-
-void wlr_output_render_software_cursors(struct wlr_output *output,
-		const pixman_region32_t *damage) {
-	int width, height;
-	wlr_output_transformed_resolution(output, &width, &height);
-
-	pixman_region32_t render_damage;
-	pixman_region32_init(&render_damage);
-	pixman_region32_union_rect(&render_damage, &render_damage, 0, 0,
-		width, height);
-	if (damage != NULL) {
-		// Damage tracking supported
-		pixman_region32_intersect(&render_damage, &render_damage, damage);
-	}
-
-	if (pixman_region32_not_empty(&render_damage)) {
-		struct wlr_output_cursor *cursor;
-		wl_list_for_each(cursor, &output->cursors, link) {
-			if (!cursor->enabled || !cursor->visible ||
-					output->hardware_cursor == cursor) {
-				continue;
-			}
-			output_cursor_render(cursor, &render_damage);
-		}
-	}
-
-	pixman_region32_fini(&render_damage);
 }
 
 void wlr_output_add_software_cursors_to_render_pass(struct wlr_output *output,
@@ -275,13 +196,27 @@ static struct wlr_buffer *render_cursor_buffer(struct wlr_output_cursor *cursor)
 
 	int width = cursor->width;
 	int height = cursor->height;
-	if (output->impl->get_cursor_size) {
+	if (output->impl->get_cursor_sizes) {
 		// Apply hardware limitations on buffer size
-		output->impl->get_cursor_size(cursor->output, &width, &height);
-		if ((int)texture->width > width || (int)texture->height > height) {
+		size_t sizes_len = 0;
+		const struct wlr_output_cursor_size *sizes =
+			output->impl->get_cursor_sizes(cursor->output, &sizes_len);
+
+		bool found = false;
+		for (size_t i = 0; i < sizes_len; i++) {
+			struct wlr_output_cursor_size size = sizes[i];
+			if ((int)texture->width <= size.width && (int)texture->height <= size.height) {
+				width = size.width;
+				height = size.height;
+				found = true;
+				break;
+			}
+		}
+
+		if (!found) {
 			wlr_log(WLR_DEBUG, "Cursor texture too large (%dx%d), "
-				"exceeds hardware limitations (%dx%d)", texture->width,
-				texture->height, width, height);
+				"exceeds hardware limitations", texture->width,
+				texture->height);
 			return NULL;
 		}
 	}
@@ -359,6 +294,8 @@ static bool output_cursor_attempt_hardware(struct wlr_output_cursor *cursor) {
 		return false;
 	}
 
+	output->hardware_cursor = NULL;
+
 	struct wlr_texture *texture = cursor->texture;
 
 	// If the cursor was hidden or was a software cursor, the hardware
@@ -421,6 +358,13 @@ bool wlr_output_cursor_set_buffer(struct wlr_output_cursor *cursor,
 		dst_width, dst_height, WL_OUTPUT_TRANSFORM_NORMAL, hotspot_x, hotspot_y);
 }
 
+static void output_cursor_handle_renderer_destroy(struct wl_listener *listener,
+		void *data) {
+	struct wlr_output_cursor *cursor = wl_container_of(listener, cursor, renderer_destroy);
+	output_cursor_set_texture(cursor, NULL, false, NULL, 0, 0,
+		WL_OUTPUT_TRANSFORM_NORMAL, 0, 0);
+}
+
 bool output_cursor_set_texture(struct wlr_output_cursor *cursor,
 		struct wlr_texture *texture, bool own_texture, const struct wlr_fbox *src_box,
 		int dst_width, int dst_height, enum wl_output_transform transform,
@@ -451,12 +395,20 @@ bool output_cursor_set_texture(struct wlr_output_cursor *cursor,
 	cursor->texture = texture;
 	cursor->own_texture = own_texture;
 
+	wl_list_remove(&cursor->renderer_destroy.link);
+	if (texture != NULL) {
+		cursor->renderer_destroy.notify = output_cursor_handle_renderer_destroy;
+		wl_signal_add(&texture->renderer->events.destroy, &cursor->renderer_destroy);
+	} else {
+		wl_list_init(&cursor->renderer_destroy.link);
+	}
+
 	if (output_cursor_attempt_hardware(cursor)) {
 		return true;
 	}
 
-	wlr_log(WLR_DEBUG, "Falling back to software cursor on output '%s'",
-		cursor->output->name);
+	wlr_log(WLR_DEBUG, "Falling back to software cursor on output '%s'", output->name);
+	output_disable_hardware_cursor(output);
 	output_cursor_damage_whole(cursor);
 	return true;
 }
@@ -502,6 +454,7 @@ struct wlr_output_cursor *wlr_output_cursor_create(struct wlr_output *output) {
 	cursor->output = output;
 	wl_list_insert(&output->cursors, &cursor->link);
 	cursor->visible = true; // default position is at (0, 0)
+	wl_list_init(&cursor->renderer_destroy.link);
 	return cursor;
 }
 
@@ -512,9 +465,9 @@ void wlr_output_cursor_destroy(struct wlr_output_cursor *cursor) {
 	output_cursor_reset(cursor);
 	if (cursor->output->hardware_cursor == cursor) {
 		// If this cursor was the hardware cursor, disable it
-		output_set_hardware_cursor(cursor->output, NULL, 0, 0);
-		cursor->output->hardware_cursor = NULL;
+		output_disable_hardware_cursor(cursor->output);
 	}
+	wl_list_remove(&cursor->renderer_destroy.link);
 	if (cursor->own_texture) {
 		wlr_texture_destroy(cursor->texture);
 	}

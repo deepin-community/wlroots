@@ -16,7 +16,7 @@ libliftoff = dependency(
 	'libliftoff',
 	version: '>=0.4.0',
 	fallback: 'libliftoff',
-	required: false,
+	required: get_option('libliftoff'),
 )
 
 if not (hwdata.found() and libdisplay_info.found() and features['session'])
@@ -38,6 +38,7 @@ wlr_files += files(
 	'atomic.c',
 	'backend.c',
 	'drm.c',
+	'fb.c',
 	'legacy.c',
 	'monitor.c',
 	'properties.c',
@@ -47,6 +48,7 @@ wlr_files += files(
 
 if libliftoff.found()
 	wlr_files += files('libliftoff.c')
+	internal_config.set10('HAVE_LIBLIFTOFF_0_5', libliftoff.version().version_compare('>=0.5.0'))
 endif
 
 features += { 'drm-backend': true }

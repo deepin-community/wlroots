@@ -1,6 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
 #include <assert.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -18,6 +15,12 @@
 
 static const struct zwp_input_method_v2_interface input_method_impl;
 static const struct zwp_input_method_keyboard_grab_v2_interface keyboard_grab_impl;
+
+static void input_state_reset(struct wlr_input_method_v2_state *state) {
+	free(state->commit_text);
+	free(state->preedit.text);
+	*state = (struct wlr_input_method_v2_state){0};
+}
 
 static void popup_surface_destroy(struct wlr_input_popup_surface_v2 *popup_surface) {
 	wlr_surface_unmap(popup_surface->surface);
@@ -53,10 +56,8 @@ static void input_method_destroy(struct wlr_input_method_v2 *input_method) {
 	wl_list_remove(wl_resource_get_link(input_method->resource));
 	wl_list_remove(&input_method->seat_client_destroy.link);
 	wlr_input_method_keyboard_grab_v2_destroy(input_method->keyboard_grab);
-	free(input_method->pending.commit_text);
-	free(input_method->pending.preedit.text);
-	free(input_method->current.commit_text);
-	free(input_method->current.preedit.text);
+	input_state_reset(&input_method->pending);
+	input_state_reset(&input_method->current);
 	free(input_method);
 }
 
@@ -81,15 +82,16 @@ static void im_commit(struct wl_client *client, struct wl_resource *resource,
 		return;
 	}
 	if (serial != input_method->current_serial) {
-		free(input_method->pending.commit_text);
-		free(input_method->pending.preedit.text);
-		input_method->pending = (struct wlr_input_method_v2_state){0};
+		input_state_reset(&input_method->pending);
 		return;
 	}
-	free(input_method->current.commit_text);
-	free(input_method->current.preedit.text);
+	input_state_reset(&input_method->current);
+
+	// This transfers ownership of the current commit_text and
+	// preedit.text from pending to current:
 	input_method->current = input_method->pending;
 	input_method->pending = (struct wlr_input_method_v2_state){0};
+
 	wl_signal_emit_mutable(&input_method->events.commit, input_method);
 }
 
@@ -145,10 +147,13 @@ void wlr_input_popup_surface_v2_send_text_input_rectangle(
 		popup_surface->resource, sbox->x, sbox->y, sbox->width, sbox->height);
 }
 
-static void popup_surface_consider_map(struct wlr_input_popup_surface_v2 *popup_surface) {
-	if (wlr_surface_has_buffer(popup_surface->surface) &&
-			popup_surface->input_method->client_active) {
-		wlr_surface_map(popup_surface->surface);
+static void popup_surface_update_mapped(struct wlr_input_popup_surface_v2 *popup_surface) {
+	if (popup_surface->input_method->client_active) {
+		if (wlr_surface_has_buffer(popup_surface->surface)) {
+			wlr_surface_map(popup_surface->surface);
+		}
+	} else {
+		wlr_surface_unmap(popup_surface->surface);
 	}
 }
 
@@ -159,7 +164,7 @@ static void popup_surface_surface_role_commit(struct wlr_surface *surface) {
 		return;
 	}
 
-	popup_surface_consider_map(popup_surface);
+	popup_surface_update_mapped(popup_surface);
 }
 
 static void popup_surface_surface_role_destroy(struct wlr_surface *surface) {
@@ -245,7 +250,7 @@ static void im_get_input_popup_surface(struct wl_client *client,
 
 	wl_signal_init(&popup_surface->events.destroy);
 
-	popup_surface_consider_map(popup_surface);
+	popup_surface_update_mapped(popup_surface);
 
 	wl_list_insert(&input_method->popup_surfaces, &popup_surface->link);
 	wl_signal_emit_mutable(&input_method->events.new_popup_surface, popup_surface);
@@ -489,7 +494,7 @@ void wlr_input_method_v2_send_done(struct wlr_input_method_v2 *input_method) {
 	input_method->current_serial++;
 	struct wlr_input_popup_surface_v2 *popup_surface;
 	wl_list_for_each(popup_surface, &input_method->popup_surfaces, link) {
-		popup_surface_consider_map(popup_surface);
+		popup_surface_update_mapped(popup_surface);
 	}
 }
 

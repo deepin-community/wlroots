@@ -21,6 +21,21 @@ struct wlr_xwm;
 struct wlr_data_source;
 struct wlr_drag;
 
+/**
+ * Xwayland integration.
+ *
+ * This includes a utility to start and monitor the Xwayland process (see
+ * struct wlr_xwayland_server), an implementation of the xwayland_shell_v1
+ * Wayland protocol, and a X11 window manager.
+ *
+ * Compositors are expected to set DISPLAY (see display_name) and listen to the
+ * new_surface event.
+ *
+ * Compositors may want to only expose the xwayland_shell_v1 Wayland global to
+ * the Xwayland client. To do so, they can set up a global filter via
+ * wl_display_set_global_filter() to ensure the global stored in
+ * shell_v1.global is only exposed to the client stored in server.client.
+ */
 struct wlr_xwayland {
 	struct wlr_xwayland_server *server;
 	bool own_server;
@@ -28,6 +43,7 @@ struct wlr_xwayland {
 	struct wlr_xwayland_shell_v1 *shell_v1;
 	struct wlr_xwayland_cursor *cursor;
 
+	// Value the DISPLAY environment variable should be set to by the compositor
 	const char *display_name;
 
 	struct wl_display *wl_display;
@@ -47,13 +63,15 @@ struct wlr_xwayland {
 	 */
 	int (*user_event_handler)(struct wlr_xwm *xwm, xcb_generic_event_t *event);
 
+	void *data;
+
+	// private state
+
 	struct wl_listener server_start;
 	struct wl_listener server_ready;
 	struct wl_listener server_destroy;
 	struct wl_listener seat_destroy;
 	struct wl_listener shell_destroy;
-
-	void *data;
 };
 
 enum wlr_xwayland_surface_decorations {
@@ -100,7 +118,6 @@ struct wlr_xwayland_surface {
 
 	int16_t x, y;
 	uint16_t width, height;
-	uint16_t saved_width, saved_height;
 	bool override_redirect;
 
 	char *title;
@@ -169,6 +186,8 @@ struct wlr_xwayland_surface {
 		struct wl_signal set_strut_partial;
 		struct wl_signal set_override_redirect;
 		struct wl_signal set_geometry;
+		/* can be used to set initial maximized/fullscreen geometry */
+		struct wl_signal map_request;
 		struct wl_signal ping_timeout;
 	} events;
 
@@ -295,5 +314,16 @@ enum wlr_xwayland_icccm_input_model wlr_xwayland_icccm_input_model(
  */
 void wlr_xwayland_set_workareas(struct wlr_xwayland *wlr_xwayland,
 	const struct wlr_box *workareas, size_t num_workareas);
+
+
+/**
+ * Get the XCB connection of the XWM.
+ *
+ * The connection is only valid after wlr_xwayland.events.ready, and becomes
+ * invalid on wlr_xwayland_server.events.destroy. In that case, NULL is
+ * returned.
+ */
+xcb_connection_t *wlr_xwayland_get_xwm_connection(
+	struct wlr_xwayland *wlr_xwayland);
 
 #endif

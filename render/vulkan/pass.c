@@ -2,16 +2,29 @@
 #include <drm_fourcc.h>
 #include <stdlib.h>
 #include <wlr/util/log.h>
+#include <wlr/render/color.h>
 
+#include "render/color.h"
 #include "render/vulkan.h"
 #include "types/wlr_matrix.h"
 
 static const struct wlr_render_pass_impl render_pass_impl;
+static const struct wlr_addon_interface vk_color_transform_impl;
 
 static struct wlr_vk_render_pass *get_render_pass(struct wlr_render_pass *wlr_pass) {
 	assert(wlr_pass->impl == &render_pass_impl);
 	struct wlr_vk_render_pass *pass = wl_container_of(wlr_pass, pass, base);
 	return pass;
+}
+
+static struct wlr_vk_color_transform *get_color_transform(
+		struct wlr_color_transform *c, struct wlr_vk_renderer *renderer) {
+	struct wlr_addon *a = wlr_addon_find(&c->addons, renderer, &vk_color_transform_impl);
+	if (!a) {
+		return NULL;
+	}
+	struct wlr_vk_color_transform *transform = wl_container_of(a, transform, addon);
+	return transform;
 }
 
 static void bind_pipeline(struct wlr_vk_render_pass *pass, VkPipeline pipeline) {
@@ -46,6 +59,10 @@ static float color_to_linear(float non_linear) {
 	return (non_linear > 0.04045) ?
 		pow((non_linear + 0.055) / 1.055, 2.4) :
 		non_linear / 12.92;
+}
+
+static float color_to_linear_premult(float non_linear, float alpha) {
+	return (alpha == 0) ? 0 : color_to_linear(non_linear / alpha) * alpha;
 }
 
 static void mat3_to_mat4(const float mat3[9], float mat4[4][4]) {
@@ -83,7 +100,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 	assert(stage_cb != NULL);
 	renderer->stage.cb = NULL;
 
-	if (render_buffer->blend_image) {
+	if (!pass->srgb_pathway) {
 		// Apply output shader to map blend image to actual output image
 		vkCmdNextSubpass(render_cb->vk, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -99,14 +116,41 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 			.uv_off = { 0, 0 },
 			.uv_size = { 1, 1 },
 		};
+		size_t dim = pass->color_transform ? pass->color_transform->lut3d.dim_len : 1;
+		struct wlr_vk_frag_output_pcr_data frag_pcr_data = {
+			.lut_3d_offset = 0.5f / dim,
+			.lut_3d_scale = (float)(dim - 1) / dim,
+		};
 		mat3_to_mat4(final_matrix, vert_pcr_data.mat4);
 
-		bind_pipeline(pass, render_buffer->render_setup->output_pipe);
+		if (pass->color_transform) {
+			bind_pipeline(pass, render_buffer->plain.render_setup->output_pipe_lut3d);
+		} else {
+			bind_pipeline(pass, render_buffer->plain.render_setup->output_pipe_srgb);
+		}
 		vkCmdPushConstants(render_cb->vk, renderer->output_pipe_layout,
 			VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(vert_pcr_data), &vert_pcr_data);
+		vkCmdPushConstants(render_cb->vk, renderer->output_pipe_layout,
+			VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(vert_pcr_data),
+			sizeof(frag_pcr_data), &frag_pcr_data);
+
+		VkDescriptorSet lut_ds;
+		if (pass->color_transform && pass->color_transform->type == COLOR_TRANSFORM_LUT_3D) {
+			struct wlr_vk_color_transform *transform =
+				get_color_transform(pass->color_transform, renderer);
+			assert(transform);
+			lut_ds = transform->lut_3d.ds;
+		} else {
+			lut_ds = renderer->output_ds_lut3d_dummy;
+		}
+		VkDescriptorSet ds[] = {
+			render_buffer->plain.blend_descriptor_set, // set 0
+			lut_ds, // set 1
+		};
+		size_t ds_len = sizeof(ds) / sizeof(ds[0]);
 		vkCmdBindDescriptorSets(render_cb->vk,
 			VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->output_pipe_layout,
-			0, 1, &render_buffer->blend_descriptor_set, 0, NULL);
+			0, ds_len, ds, 0, NULL);
 
 		const pixman_region32_t *clip = rect_union_evaluate(&pass->updated_region);
 		int clip_rects_len;
@@ -124,14 +168,18 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 
 	// insert acquire and release barriers for dmabuf-images
 	uint32_t barrier_count = wl_list_length(&renderer->foreign_textures) + 1;
+	render_wait = calloc(barrier_count * WLR_DMABUF_MAX_PLANES, sizeof(*render_wait));
+	if (render_wait == NULL) {
+		wlr_log_errno(WLR_ERROR, "Allocation failed");
+		goto error;
+	}
+
 	VkImageMemoryBarrier *acquire_barriers = calloc(barrier_count, sizeof(*acquire_barriers));
 	VkImageMemoryBarrier *release_barriers = calloc(barrier_count, sizeof(*release_barriers));
-	render_wait = calloc(barrier_count * WLR_DMABUF_MAX_PLANES, sizeof(*render_wait));
-	if (acquire_barriers == NULL || release_barriers == NULL || render_wait == NULL) {
+	if (acquire_barriers == NULL || release_barriers == NULL) {
 		wlr_log_errno(WLR_ERROR, "Allocation failed");
 		free(acquire_barriers);
 		free(release_barriers);
-		free(render_wait);
 		goto error;
 	}
 
@@ -139,9 +187,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 	size_t idx = 0;
 	uint32_t render_wait_len = 0;
 	wl_list_for_each_safe(texture, tmp_tex, &renderer->foreign_textures, foreign_link) {
-		VkImageLayout src_layout = VK_IMAGE_LAYOUT_GENERAL;
 		if (!texture->transitioned) {
-			src_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 			texture->transitioned = true;
 		}
 
@@ -151,7 +197,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
 			.dstQueueFamilyIndex = renderer->dev->queue_family,
 			.image = texture->image,
-			.oldLayout = src_layout,
+			.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
 			.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			.srcAccessMask = 0, // ignored anyways
 			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
@@ -198,26 +244,30 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 
 	// also add acquire/release barriers for the current render buffer
 	VkImageLayout src_layout = VK_IMAGE_LAYOUT_GENERAL;
-	if (!render_buffer->transitioned) {
-		src_layout = VK_IMAGE_LAYOUT_PREINITIALIZED;
-		render_buffer->transitioned = true;
-	}
-
-	if (render_buffer->blend_image) {
+	if (pass->srgb_pathway) {
+		if (!render_buffer->srgb.transitioned) {
+			src_layout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+			render_buffer->srgb.transitioned = true;
+		}
+	} else {
+		if (!render_buffer->plain.transitioned) {
+			src_layout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+			render_buffer->plain.transitioned = true;
+		}
 		// The render pass changes the blend image layout from
 		// color attachment to read only, so on each frame, before
 		// the render pass starts, we change it back
 		VkImageLayout blend_src_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		if (!render_buffer->blend_transitioned) {
+		if (!render_buffer->plain.blend_transitioned) {
 			blend_src_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-			render_buffer->blend_transitioned = true;
+			render_buffer->plain.blend_transitioned = true;
 		}
 
 		VkImageMemoryBarrier blend_acq_barrier = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = render_buffer->blend_image,
+			.image = render_buffer->plain.blend_image,
 			.oldLayout = blend_src_layout,
 			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			.srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
@@ -393,6 +443,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 		wlr_log(WLR_ERROR, "Failed to sync render buffer");
 	}
 
+	wlr_color_transform_unref(pass->color_transform);
 	wlr_buffer_unlock(render_buffer->wlr_buffer);
 	rect_union_finish(&pass->updated_region);
 	free(pass);
@@ -415,7 +466,7 @@ error:
 
 static void render_pass_mark_box_updated(struct wlr_vk_render_pass *pass,
 		const struct wlr_box *box) {
-	if (!pass->render_buffer->blend_image) {
+	if (pass->srgb_pathway) {
 		return;
 	}
 
@@ -439,9 +490,9 @@ static void render_pass_add_rect(struct wlr_render_pass *wlr_pass,
 	// colors in linear space as well (and vulkan then automatically
 	// does the conversion for out sRGB render targets).
 	float linear_color[] = {
-		color_to_linear(options->color.r),
-		color_to_linear(options->color.g),
-		color_to_linear(options->color.b),
+		color_to_linear_premult(options->color.r, options->color.a),
+		color_to_linear_premult(options->color.g, options->color.a),
+		color_to_linear_premult(options->color.b, options->color.a),
 		options->color.a, // no conversion for alpha
 	};
 
@@ -475,8 +526,11 @@ static void render_pass_add_rect(struct wlr_render_pass *wlr_pass,
 		wlr_matrix_project_box(matrix, &box, WL_OUTPUT_TRANSFORM_NORMAL, 0, proj);
 		wlr_matrix_multiply(matrix, pass->projection, matrix);
 
+		struct wlr_vk_render_format_setup *setup = pass->srgb_pathway ?
+			pass->render_buffer->srgb.render_setup :
+			pass->render_buffer->plain.render_setup;
 		struct wlr_vk_pipeline *pipe = setup_get_or_create_pipeline(
-			pass->render_buffer->render_setup,
+			setup,
 			&(struct wlr_vk_pipeline_key) {
 				.source = WLR_VK_SHADER_SOURCE_SINGLE_COLOR,
 				.layout = { .ycbcr_format = NULL },
@@ -540,7 +594,6 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 		const struct wlr_render_texture_options *options) {
 	struct wlr_vk_render_pass *pass = get_render_pass(wlr_pass);
 	struct wlr_vk_renderer *renderer = pass->renderer;
-	struct wlr_vk_render_buffer *render_buffer = pass->render_buffer;
 	VkCommandBuffer cb = pass->command_buffer->vk;
 
 	struct wlr_vk_texture *texture = vulkan_get_texture(options->texture);
@@ -565,9 +618,6 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 	wlr_render_texture_options_get_dst_box(options, &dst_box);
 	float alpha = wlr_render_texture_options_get_alpha(options);
 
-	pixman_region32_t clip;
-	get_clip_region(pass, options->clip, &clip);
-
 	float proj[9], matrix[9];
 	wlr_matrix_identity(proj);
 	wlr_matrix_project_box(matrix, &dst_box, options->transform, 0, proj);
@@ -585,8 +635,11 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 	};
 	mat3_to_mat4(matrix, vert_pcr_data.mat4);
 
+	struct wlr_vk_render_format_setup *setup = pass->srgb_pathway ?
+		pass->render_buffer->srgb.render_setup :
+		pass->render_buffer->plain.render_setup;
 	struct wlr_vk_pipeline *pipe = setup_get_or_create_pipeline(
-		render_buffer->render_setup,
+		setup,
 		&(struct wlr_vk_pipeline_key) {
 			.source = WLR_VK_SHADER_SOURCE_TEXTURE,
 			.layout = {
@@ -620,6 +673,9 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 		VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(vert_pcr_data), sizeof(float),
 		&alpha);
 
+	pixman_region32_t clip;
+	get_clip_region(pass, options->clip, &clip);
+
 	int clip_rects_len;
 	const pixman_box32_t *clip_rects = pixman_region32_rectangles(&clip, &clip_rects_len);
 	for (int i = 0; i < clip_rects_len; i++) {
@@ -642,6 +698,8 @@ static void render_pass_add_texture(struct wlr_render_pass *wlr_pass,
 	}
 
 	texture->last_used_cb = pass->command_buffer;
+
+	pixman_region32_fini(&clip);
 }
 
 static const struct wlr_render_pass_impl render_pass_impl = {
@@ -650,14 +708,261 @@ static const struct wlr_render_pass_impl render_pass_impl = {
 	.add_texture = render_pass_add_texture,
 };
 
+
+void vk_color_transform_destroy(struct wlr_addon *addon) {
+	struct wlr_vk_renderer *renderer = (struct wlr_vk_renderer *)addon->owner;
+	struct wlr_vk_color_transform *transform = wl_container_of(addon, transform, addon);
+
+	VkDevice dev = renderer->dev->dev;
+	if (transform->lut_3d.image) {
+		vkDestroyImage(dev, transform->lut_3d.image, NULL);
+		vkDestroyImageView(dev, transform->lut_3d.image_view, NULL);
+		vkFreeMemory(dev, transform->lut_3d.memory, NULL);
+		vulkan_free_ds(renderer, transform->lut_3d.ds_pool, transform->lut_3d.ds);
+	}
+
+	wl_list_remove(&transform->link);
+	wlr_addon_finish(&transform->addon);
+	free(transform);
+}
+
+static bool create_3d_lut_image(struct wlr_vk_renderer *renderer,
+		const struct wlr_color_transform_lut3d *lut_3d,
+		VkImage *image, VkImageView *image_view,
+		VkDeviceMemory *memory,	VkDescriptorSet *ds,
+		struct wlr_vk_descriptor_pool **ds_pool) {
+	VkDevice dev = renderer->dev->dev;
+	VkResult res;
+
+	*image = VK_NULL_HANDLE;
+	*memory = VK_NULL_HANDLE;
+	*image_view = VK_NULL_HANDLE;
+	*ds = VK_NULL_HANDLE;
+	*ds_pool = NULL;
+
+	// R32G32B32 is not a required Vulkan format
+	// TODO: use it when available
+	VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT;
+
+	VkImageCreateInfo img_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_3D,
+		.format = format,
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.extent = (VkExtent3D) { lut_3d->dim_len, lut_3d->dim_len, lut_3d->dim_len },
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+	};
+	res = vkCreateImage(dev, &img_info, NULL, image);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateImage failed", res);
+		return NULL;
+	}
+
+	VkMemoryRequirements mem_reqs = {0};
+	vkGetImageMemoryRequirements(dev, *image, &mem_reqs);
+
+	int mem_type_index = vulkan_find_mem_type(renderer->dev,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mem_reqs.memoryTypeBits);
+	if (mem_type_index == -1) {
+		wlr_log(WLR_ERROR, "Failed to find suitable memory type");
+		goto fail_image;
+	}
+
+	VkMemoryAllocateInfo mem_info = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = mem_reqs.size,
+		.memoryTypeIndex = mem_type_index,
+	};
+	res = vkAllocateMemory(dev, &mem_info, NULL, memory);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkAllocateMemory failed", res);
+		goto fail_image;
+	}
+
+	res = vkBindImageMemory(dev, *image, *memory, 0);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkBindMemory failed", res);
+		goto fail_memory;
+	}
+
+	VkImageViewCreateInfo view_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.viewType = VK_IMAGE_VIEW_TYPE_3D,
+		.format = format,
+		.components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
+		.components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
+		.components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
+		.components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
+		.subresourceRange = (VkImageSubresourceRange) {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+		.image = *image,
+	};
+	res = vkCreateImageView(dev, &view_info, NULL, image_view);
+	if (res != VK_SUCCESS) {
+		wlr_vk_error("vkCreateImageView failed", res);
+		goto fail_image;
+	}
+
+	size_t bytes_per_block = 4 * sizeof(float);
+	size_t size = lut_3d->dim_len * lut_3d->dim_len * lut_3d->dim_len * bytes_per_block;
+	struct wlr_vk_buffer_span span = vulkan_get_stage_span(renderer,
+		size, bytes_per_block);
+	if (!span.buffer || span.alloc.size != size) {
+		wlr_log(WLR_ERROR, "Failed to retrieve staging buffer");
+		goto fail_imageview;
+	}
+
+	char *map = (char*)span.buffer->cpu_mapping + span.alloc.start;
+	float *dst = (float*)map;
+	size_t dim_len = lut_3d->dim_len;
+	for (size_t b_index = 0; b_index < dim_len; b_index++) {
+		for (size_t g_index = 0; g_index < dim_len; g_index++) {
+			for (size_t r_index = 0; r_index < dim_len; r_index++) {
+				size_t sample_index = r_index + dim_len * g_index + dim_len * dim_len * b_index;
+				size_t src_offset = 3 * sample_index;
+				size_t dst_offset = 4 * sample_index;
+				dst[dst_offset] = lut_3d->lut_3d[src_offset];
+				dst[dst_offset + 1] = lut_3d->lut_3d[src_offset + 1];
+				dst[dst_offset + 2] = lut_3d->lut_3d[src_offset + 2];
+				dst[dst_offset + 3] = 1.0;
+			}
+		}
+	}
+
+	VkCommandBuffer cb = vulkan_record_stage_cb(renderer);
+	vulkan_change_layout(cb, *image,
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_ACCESS_TRANSFER_WRITE_BIT);
+	VkBufferImageCopy copy = {
+		.bufferOffset = span.alloc.start,
+		.imageExtent.width = lut_3d->dim_len,
+		.imageExtent.height = lut_3d->dim_len,
+		.imageExtent.depth = lut_3d->dim_len,
+		.imageSubresource.layerCount = 1,
+		.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	};
+	vkCmdCopyBufferToImage(cb, span.buffer->buffer, *image,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+	vulkan_change_layout(cb, *image,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_ACCESS_SHADER_READ_BIT);
+
+	*ds_pool = vulkan_alloc_texture_ds(renderer,
+		renderer->output_ds_lut3d_layout, ds);
+	if (!*ds_pool) {
+		wlr_log(WLR_ERROR, "Failed to allocate descriptor");
+		goto fail_imageview;
+	}
+
+	VkDescriptorImageInfo ds_img_info = {
+		.imageView = *image_view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	VkWriteDescriptorSet ds_write = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.dstSet = *ds,
+		.pImageInfo = &ds_img_info,
+	};
+	vkUpdateDescriptorSets(dev, 1, &ds_write, 0, NULL);
+
+	return true;
+
+fail_imageview:
+	vkDestroyImageView(dev, *image_view, NULL);
+fail_memory:
+	vkFreeMemory(dev, *memory, NULL);
+fail_image:
+	vkDestroyImage(dev, *image, NULL);
+	return false;
+}
+
+static struct wlr_vk_color_transform *vk_color_transform_create(
+		struct wlr_vk_renderer *renderer, struct wlr_color_transform *transform) {
+	struct wlr_vk_color_transform *vk_transform =
+		calloc(1, sizeof(*vk_transform));
+	if (!vk_transform) {
+		return NULL;
+	}
+
+	if (transform->type == COLOR_TRANSFORM_LUT_3D) {
+		if (!create_3d_lut_image(renderer, &transform->lut3d,
+				&vk_transform->lut_3d.image,
+				&vk_transform->lut_3d.image_view,
+				&vk_transform->lut_3d.memory,
+				&vk_transform->lut_3d.ds,
+				&vk_transform->lut_3d.ds_pool)) {
+			free(vk_transform);
+			return NULL;
+		}
+	}
+
+	wlr_addon_init(&vk_transform->addon, &transform->addons,
+		renderer, &vk_color_transform_impl);
+	wl_list_insert(&renderer->color_transforms, &vk_transform->link);
+
+	return vk_transform;
+}
+
+
+static const struct wlr_addon_interface vk_color_transform_impl = {
+	"vk_color_transform",
+	.destroy = vk_color_transform_destroy,
+};
+
 struct wlr_vk_render_pass *vulkan_begin_render_pass(struct wlr_vk_renderer *renderer,
-		struct wlr_vk_render_buffer *buffer) {
+		struct wlr_vk_render_buffer *buffer, const struct wlr_buffer_pass_options *options) {
+	bool using_srgb_pathway;
+	if (options != NULL && options->color_transform != NULL) {
+		using_srgb_pathway = false;
+
+		if (!get_color_transform(options->color_transform, renderer)) {
+			/* Try to create a new color transform */
+			if (!vk_color_transform_create(renderer, options->color_transform)) {
+				wlr_log(WLR_ERROR, "Failed to create color transform");
+				return NULL;
+			}
+		}
+	} else {
+		// Use srgb pathway if it is the default/has already been set up
+		using_srgb_pathway = buffer->srgb.framebuffer != VK_NULL_HANDLE;
+	}
+
+	if (!using_srgb_pathway && !buffer->plain.image_view) {
+		struct wlr_dmabuf_attributes attribs;
+		wlr_buffer_get_dmabuf(buffer->wlr_buffer, &attribs);
+		if (!vulkan_setup_plain_framebuffer(buffer, &attribs)) {
+			wlr_log(WLR_ERROR, "Failed to set up blend image");
+			return NULL;
+		}
+	}
+
 	struct wlr_vk_render_pass *pass = calloc(1, sizeof(*pass));
 	if (pass == NULL) {
 		return NULL;
 	}
+
 	wlr_render_pass_init(&pass->base, &render_pass_impl);
 	pass->renderer = renderer;
+	pass->srgb_pathway = using_srgb_pathway;
+	if (options != NULL && options->color_transform != NULL) {
+		wlr_color_transform_ref(options->color_transform);
+		pass->color_transform = options->color_transform;
+	}
 
 	rect_union_init(&pass->updated_region);
 
@@ -678,6 +983,14 @@ struct wlr_vk_render_pass *vulkan_begin_render_pass(struct wlr_vk_renderer *rend
 		return NULL;
 	}
 
+	if (!renderer->dummy3d_image_transitioned) {
+		renderer->dummy3d_image_transitioned = true;
+		vulkan_change_layout(cb->vk, renderer->dummy3d_image,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_ACCESS_SHADER_READ_BIT);
+	}
+
 	int width = buffer->wlr_buffer->width;
 	int height = buffer->wlr_buffer->height;
 	VkRect2D rect = { .extent = { width, height } };
@@ -685,10 +998,15 @@ struct wlr_vk_render_pass *vulkan_begin_render_pass(struct wlr_vk_renderer *rend
 	VkRenderPassBeginInfo rp_info = {
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 		.renderArea = rect,
-		.renderPass = buffer->render_setup->render_pass,
-		.framebuffer = buffer->framebuffer,
 		.clearValueCount = 0,
 	};
+	if (pass->srgb_pathway) {
+		rp_info.renderPass = buffer->srgb.render_setup->render_pass;
+		rp_info.framebuffer = buffer->srgb.framebuffer;
+	} else {
+		rp_info.renderPass = buffer->plain.render_setup->render_pass;
+		rp_info.framebuffer = buffer->plain.framebuffer;
+	}
 	vkCmdBeginRenderPass(cb->vk, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
 
 	vkCmdSetViewport(cb->vk, 0, 1, &(VkViewport){

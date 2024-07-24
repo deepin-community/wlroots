@@ -18,12 +18,10 @@ struct wlr_libinput_backend {
 	struct wlr_backend backend;
 
 	struct wlr_session *session;
-	struct wl_display *display;
 
 	struct libinput *libinput_context;
 	struct wl_event_source *input_event;
 
-	struct wl_listener display_destroy;
 	struct wl_listener session_destroy;
 	struct wl_listener session_signal;
 
@@ -50,6 +48,7 @@ void handle_libinput_event(struct wlr_libinput_backend *state,
 		struct libinput_event *event);
 
 void destroy_libinput_input_device(struct wlr_libinput_input_device *dev);
+const char *get_libinput_device_name(struct libinput_device *device);
 
 extern const struct wlr_keyboard_impl libinput_keyboard_impl;
 extern const struct wlr_pointer_impl libinput_pointer_impl;
@@ -72,10 +71,8 @@ void handle_pointer_button(struct libinput_event *event,
 	struct wlr_pointer *pointer);
 void handle_pointer_axis(struct libinput_event *event,
 	struct wlr_pointer *pointer);
-#if HAVE_LIBINPUT_SCROLL_VALUE120
 void handle_pointer_axis_value120(struct libinput_event *event,
-	struct wlr_pointer *pointer, enum wlr_axis_source source);
-#endif
+	struct wlr_pointer *pointer, enum wl_pointer_axis_source source);
 void handle_pointer_swipe_begin(struct libinput_event *event,
 	struct wlr_pointer *pointer);
 void handle_pointer_swipe_update(struct libinput_event *event,

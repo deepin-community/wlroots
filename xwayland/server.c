@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -358,6 +357,8 @@ static bool server_start(struct wlr_xwayland_server *server) {
 	}
 	if (!set_cloexec(notify_fd[0], true)) {
 		wlr_log(WLR_ERROR, "Failed to set CLOEXEC on FD");
+		close(notify_fd[0]);
+		close(notify_fd[1]);
 		server_finish_process(server);
 		return false;
 	}

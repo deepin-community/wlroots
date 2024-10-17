@@ -1,3 +1,9 @@
+wlroots (0.17.4-1) unstable; urgency=medium
+
+  * Sync upstream
+
+ -- Dingyuan Zhang <zhangdingyuan@deepin.org>  Thu, 17 Oct 2024 11:32:00 +0800
+
 wlroots (0.17.2-1deepin2) unstable; urgency=medium
 
   * Add deepin patchs

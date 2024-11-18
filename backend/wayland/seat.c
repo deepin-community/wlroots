@@ -1,5 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -7,7 +5,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <wayland-client.h>
+#include <wayland-client-protocol.h>
 
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_output.h>
@@ -314,7 +312,7 @@ bool wlr_input_device_is_wl(struct wlr_input_device *dev) {
 		return wlr_pointer_from_input_device(dev)->impl == &wl_pointer_impl;
 	case WLR_INPUT_DEVICE_TOUCH:
 		return wlr_touch_from_input_device(dev)->impl == &touch_impl;
-	case WLR_INPUT_DEVICE_TABLET_TOOL:
+	case WLR_INPUT_DEVICE_TABLET:
 		return wlr_tablet_from_input_device(dev)-> impl == &wl_tablet_impl;
 	case WLR_INPUT_DEVICE_TABLET_PAD:
 		return wlr_tablet_pad_from_input_device(dev)->impl == &wl_tablet_pad_impl;

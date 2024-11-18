@@ -1,7 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
-
 #include <assert.h>
 #include <stdlib.h>
 #include <types/wlr_tablet_v2.h>
@@ -11,7 +7,7 @@
 #include <wlr/types/wlr_tablet_pad.h>
 #include <wlr/types/wlr_tablet_v2.h>
 #include <wlr/util/log.h>
-#include "tablet-unstable-v2-protocol.h"
+#include "tablet-v2-protocol.h"
 
 static const struct wlr_tablet_pad_v2_grab_interface default_pad_grab_interface;
 

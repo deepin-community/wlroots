@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 
-#include <wayland-client.h>
+#include <wayland-client-protocol.h>
 #include <wayland-server-core.h>
 
 #include <wlr/backend/wayland.h>
@@ -20,12 +20,12 @@ struct wlr_wl_backend {
 
 	/* local state */
 	bool started;
-	struct wl_display *local_display;
+	struct wl_event_loop *event_loop;
 	struct wl_list outputs;
 	int drm_fd;
 	struct wl_list buffers; // wlr_wl_buffer.link
 	size_t requested_outputs;
-	struct wl_listener local_display_destroy;
+	struct wl_listener event_loop_destroy;
 	char *activation_token;
 
 	/* remote state */
@@ -90,7 +90,22 @@ struct wlr_wl_output {
 	struct zxdg_toplevel_decoration_v1 *zxdg_toplevel_decoration_v1;
 	struct wl_list presentation_feedbacks;
 
+	char *title;
+	char *app_id;
+
+	// 0 if not requested
+	int32_t requested_width, requested_height;
+
+	uint32_t configure_serial;
+	bool has_configure_serial;
 	bool configured;
+
+	bool initialized;
+
+	// If not NULL, the host compositor hasn't acknowledged the unmapping yet;
+	// ignore all configure events
+	struct wl_callback *unmap_callback;
+
 	uint32_t enter_serial;
 
 	struct {
@@ -106,9 +121,10 @@ struct wlr_wl_pointer {
 	struct wlr_wl_seat *seat;
 	struct wlr_wl_output *output;
 
-	enum wlr_axis_source axis_source;
+	enum wl_pointer_axis_source axis_source;
 	int32_t axis_discrete;
 	uint32_t fingers; // trackpad gesture
+	enum wl_pointer_axis_relative_direction axis_relative_direction;
 
 	struct wl_listener output_destroy;
 

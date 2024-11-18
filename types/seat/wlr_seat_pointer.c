@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,15 +23,16 @@ static void default_pointer_motion(struct wlr_seat_pointer_grab *grab,
 }
 
 static uint32_t default_pointer_button(struct wlr_seat_pointer_grab *grab,
-		uint32_t time, uint32_t button, enum wlr_button_state state) {
+		uint32_t time, uint32_t button, enum wl_pointer_button_state state) {
 	return wlr_seat_pointer_send_button(grab->seat, time, button, state);
 }
 
 static void default_pointer_axis(struct wlr_seat_pointer_grab *grab,
-		uint32_t time, enum wlr_axis_orientation orientation, double value,
-		int32_t value_discrete, enum wlr_axis_source source) {
+		uint32_t time, enum wl_pointer_axis orientation, double value,
+		int32_t value_discrete, enum wl_pointer_axis_source source,
+		enum wl_pointer_axis_relative_direction relative_direction) {
 	wlr_seat_pointer_send_axis(grab->seat, time, orientation, value,
-		value_discrete, source);
+		value_discrete, source, relative_direction);
 }
 
 static void default_pointer_frame(struct wlr_seat_pointer_grab *grab) {
@@ -260,7 +260,7 @@ void wlr_seat_pointer_send_motion(struct wlr_seat *wlr_seat, uint32_t time,
 }
 
 uint32_t wlr_seat_pointer_send_button(struct wlr_seat *wlr_seat, uint32_t time,
-		uint32_t button, enum wlr_button_state state) {
+		uint32_t button, enum wl_pointer_button_state state) {
 	struct wlr_seat_client *client = wlr_seat->pointer_state.focused_client;
 	if (client == NULL) {
 		return 0;
@@ -287,7 +287,7 @@ static bool should_reset_value120_accumulators(int32_t current, int32_t last) {
 }
 
 static void update_value120_accumulators(struct wlr_seat_client *client,
-		enum wlr_axis_orientation orientation,
+		enum wl_pointer_axis orientation,
 		double value, int32_t value_discrete,
 		double *low_res_value, int32_t *low_res_value_discrete) {
 	if (value_discrete == 0) {
@@ -320,8 +320,9 @@ static void update_value120_accumulators(struct wlr_seat_client *client,
 }
 
 void wlr_seat_pointer_send_axis(struct wlr_seat *wlr_seat, uint32_t time,
-		enum wlr_axis_orientation orientation, double value,
-		int32_t value_discrete, enum wlr_axis_source source) {
+		enum wl_pointer_axis orientation, double value,
+		int32_t value_discrete, enum wl_pointer_axis_source source,
+		enum wl_pointer_axis_relative_direction relative_direction) {
 	struct wlr_seat_client *client = wlr_seat->pointer_state.focused_client;
 	if (client == NULL) {
 		return;
@@ -361,6 +362,10 @@ void wlr_seat_pointer_send_axis(struct wlr_seat *wlr_seat, uint32_t time,
 			wl_pointer_send_axis_source(resource, source);
 		}
 		if (value) {
+			if (version >= WL_POINTER_AXIS_RELATIVE_DIRECTION_SINCE_VERSION) {
+				wl_pointer_send_axis_relative_direction(resource,
+					orientation, relative_direction);
+			}
 			if (value_discrete) {
 				if (version >= WL_POINTER_AXIS_VALUE120_SINCE_VERSION) {
 					// High resolution discrete scrolling
@@ -448,12 +453,12 @@ void wlr_seat_pointer_notify_motion(struct wlr_seat *wlr_seat, uint32_t time,
 }
 
 uint32_t wlr_seat_pointer_notify_button(struct wlr_seat *wlr_seat,
-		uint32_t time, uint32_t button, enum wlr_button_state state) {
+		uint32_t time, uint32_t button, enum wl_pointer_button_state state) {
 	clock_gettime(CLOCK_MONOTONIC, &wlr_seat->last_event);
 
 	struct wlr_seat_pointer_state* pointer_state = &wlr_seat->pointer_state;
 
-	if (state == WLR_BUTTON_PRESSED) {
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
 		if (pointer_state->button_count == 0) {
 			pointer_state->grab_button = button;
 			pointer_state->grab_time = time;
@@ -470,7 +475,7 @@ uint32_t wlr_seat_pointer_notify_button(struct wlr_seat *wlr_seat,
 	uint32_t serial = grab->interface->button(grab, time, button, state);
 
 	if (serial && pointer_state->button_count == 1 &&
-			state == WLR_BUTTON_PRESSED) {
+			state == WL_POINTER_BUTTON_STATE_PRESSED) {
 		pointer_state->grab_serial = serial;
 	}
 
@@ -478,12 +483,13 @@ uint32_t wlr_seat_pointer_notify_button(struct wlr_seat *wlr_seat,
 }
 
 void wlr_seat_pointer_notify_axis(struct wlr_seat *wlr_seat, uint32_t time,
-		enum wlr_axis_orientation orientation, double value,
-		int32_t value_discrete, enum wlr_axis_source source) {
+		enum wl_pointer_axis orientation, double value,
+		int32_t value_discrete, enum wl_pointer_axis_source source,
+		enum wl_pointer_axis_relative_direction relative_direction) {
 	clock_gettime(CLOCK_MONOTONIC, &wlr_seat->last_event);
 	struct wlr_seat_pointer_grab *grab = wlr_seat->pointer_state.grab;
 	grab->interface->axis(grab, time, orientation, value, value_discrete,
-		source);
+		source, relative_direction);
 }
 
 void wlr_seat_pointer_notify_frame(struct wlr_seat *wlr_seat) {

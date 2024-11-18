@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +11,7 @@
 #include "types/wlr_seat.h"
 #include "util/global.h"
 
-#define SEAT_VERSION 8
+#define SEAT_VERSION 9
 
 static void seat_handle_get_pointer(struct wl_client *client,
 		struct wl_resource *seat_resource, uint32_t id) {

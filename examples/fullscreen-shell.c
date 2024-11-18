@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200112L
 #include <getopt.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -11,11 +10,11 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_fullscreen_shell_v1.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
+#include <wlr/util/transform.h>
 
 /**
  * A minimal fullscreen-shell server. It only supports rendering.
@@ -162,7 +161,7 @@ static void server_handle_new_output(struct wl_listener *listener, void *data) {
 	wl_list_insert(&server->outputs, &output->link);
 
 	wlr_output_layout_add_auto(server->output_layout, wlr_output);
-	wlr_output_create_global(wlr_output);
+	wlr_output_create_global(wlr_output, server->wl_display);
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
@@ -212,7 +211,7 @@ int main(int argc, char *argv[]) {
 
 	struct fullscreen_server server = {0};
 	server.wl_display = wl_display_create();
-	server.backend = wlr_backend_autocreate(server.wl_display, NULL);
+	server.backend = wlr_backend_autocreate(wl_display_get_event_loop(server.wl_display), NULL);
 	server.renderer = wlr_renderer_autocreate(server.backend);
 	wlr_renderer_init_wl_display(server.renderer, server.wl_display);
 	server.allocator = wlr_allocator_autocreate(server.backend,
@@ -220,7 +219,7 @@ int main(int argc, char *argv[]) {
 
 	wlr_compositor_create(server.wl_display, 5, server.renderer);
 
-	server.output_layout = wlr_output_layout_create();
+	server.output_layout = wlr_output_layout_create(server.wl_display);
 
 	wl_list_init(&server.outputs);
 	server.new_output.notify = server_handle_new_output;

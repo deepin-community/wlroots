@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,13 +99,18 @@ static void security_context_destroy(
 	free(security_context);
 }
 
+static void security_context_client_destroy(
+		struct wlr_security_context_v1_client *security_context_client) {
+	wl_list_remove(&security_context_client->destroy.link);
+	security_context_state_finish(&security_context_client->state);
+	free(security_context_client);
+}
+
 static void security_context_client_handle_destroy(struct wl_listener *listener,
 		void *data) {
 	struct wlr_security_context_v1_client *security_context_client =
 		wl_container_of(listener, security_context_client, destroy);
-	wl_list_remove(&security_context_client->destroy.link);
-	security_context_state_finish(&security_context_client->state);
-	free(security_context_client);
+	security_context_client_destroy(security_context_client);
 }
 
 static int security_context_handle_listen_fd_event(int listen_fd, uint32_t mask,
@@ -139,17 +143,19 @@ static int security_context_handle_listen_fd_event(int listen_fd, uint32_t mask,
 		if (client == NULL) {
 			wlr_log(WLR_ERROR, "wl_client_create failed");
 			close(client_fd);
-			return 0;
-		}
-
-		if (!security_context_state_copy(&security_context_client->state,
-				&security_context->state)) {
-			wl_client_post_no_memory(client);
+			free(security_context_client);
 			return 0;
 		}
 
 		security_context_client->destroy.notify = security_context_client_handle_destroy;
 		wl_client_add_destroy_listener(client, &security_context_client->destroy);
+
+		if (!security_context_state_copy(&security_context_client->state,
+				&security_context->state)) {
+			security_context_client_destroy(security_context_client);
+			wl_client_post_no_memory(client);
+			return 0;
+		}
 	}
 
 	return 0;
@@ -423,8 +429,8 @@ struct wlr_security_context_manager_v1 *wlr_security_context_manager_v1_create(
 }
 
 const struct wlr_security_context_v1_state *wlr_security_context_manager_v1_lookup_client(
-		struct wlr_security_context_manager_v1 *manager, struct wl_client *client) {
-	struct wl_listener *listener = wl_client_get_destroy_listener(client,
+		struct wlr_security_context_manager_v1 *manager, const struct wl_client *client) {
+	struct wl_listener *listener = wl_client_get_destroy_listener((struct wl_client *)client,
 		security_context_client_handle_destroy);
 	if (listener == NULL) {
 		return NULL;

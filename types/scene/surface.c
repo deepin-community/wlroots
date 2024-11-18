@@ -1,9 +1,11 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
+#include <wlr/util/transform.h>
 #include "types/wlr_scene.h"
 
 static void handle_scene_buffer_outputs_update(
@@ -17,6 +19,8 @@ static void handle_scene_buffer_outputs_update(
 	double scale = surface->buffer->primary_output->output->scale;
 	wlr_fractional_scale_v1_notify_scale(surface->surface, scale);
 	wlr_surface_set_preferred_buffer_scale(surface->surface, ceil(scale));
+	wlr_surface_set_preferred_buffer_transform(surface->surface,
+		surface->buffer->primary_output->output->transform);
 }
 
 static void handle_scene_buffer_output_enter(
@@ -47,17 +51,10 @@ static void handle_scene_buffer_output_sample(
 		return;
 	}
 
-	struct wlr_scene *root = scene_node_get_root(&surface->buffer->node);
-	if (!root->presentation) {
-		return;
-	}
-
 	if (event->direct_scanout) {
-		wlr_presentation_surface_scanned_out_on_output(
-			root->presentation, surface->surface, scene_output->output);
+		wlr_presentation_surface_scanned_out_on_output(surface->surface, scene_output->output);
 	} else {
-		wlr_presentation_surface_textured_on_output(
-			root->presentation, surface->surface, scene_output->output);
+		wlr_presentation_surface_textured_on_output(surface->surface, scene_output->output);
 	}
 }
 
@@ -129,12 +126,7 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 
 		wlr_fbox_transform(&src_box, &src_box, state->transform,
 			buffer_width, buffer_height);
-
-		if (state->transform & WL_OUTPUT_TRANSFORM_90) {
-			int tmp = buffer_width;
-			buffer_width = buffer_height;
-			buffer_height = tmp;
-		}
+		wlr_output_transform_coords(state->transform, &buffer_width, &buffer_height);
 
 		src_box.x += (double)(clip->x * buffer_width) / state->width;
 		src_box.y += (double)(clip->y * buffer_height) / state->height;
@@ -154,10 +146,18 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 		return;
 	}
 
+	float opacity = 1.0;
+	const struct wlr_alpha_modifier_surface_v1_state *alpha_modifier_state =
+		wlr_alpha_modifier_v1_get_surface_state(surface);
+	if (alpha_modifier_state != NULL) {
+		opacity = (float)alpha_modifier_state->multiplier;
+	}
+
 	wlr_scene_buffer_set_opaque_region(scene_buffer, &opaque);
 	wlr_scene_buffer_set_source_box(scene_buffer, &src_box);
 	wlr_scene_buffer_set_dest_size(scene_buffer, width, height);
 	wlr_scene_buffer_set_transform(scene_buffer, state->transform);
+	wlr_scene_buffer_set_opacity(scene_buffer, opacity);
 
 	scene_buffer_unmark_client_buffer(scene_buffer);
 

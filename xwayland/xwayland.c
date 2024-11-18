@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -92,6 +91,7 @@ void wlr_xwayland_destroy(struct wlr_xwayland *xwayland) {
 	}
 	xwayland->server = NULL;
 	wlr_xwayland_shell_v1_destroy(xwayland->shell_v1);
+	xwm_destroy(xwayland->xwm);
 	free(xwayland);
 }
 

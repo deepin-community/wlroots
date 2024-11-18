@@ -23,7 +23,8 @@
  * SOFTWARE.
  */
 
-#define _DEFAULT_SOURCE
+#undef _POSIX_C_SOURCE
+#define _DEFAULT_SOURCE // for d_type in struct dirent
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>

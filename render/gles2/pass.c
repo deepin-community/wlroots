@@ -1,9 +1,9 @@
-#define _POSIX_C_SOURCE 199309L
 #include <stdlib.h>
 #include <assert.h>
 #include <pixman.h>
 #include <time.h>
 #include <wlr/types/wlr_matrix.h>
+#include <wlr/util/transform.h>
 #include "render/gles2.h"
 #include "types/wlr_matrix.h"
 
@@ -40,6 +40,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	pop_gles2_debug(renderer);
+	wlr_egl_restore_context(&pass->prev_ctx);
 
 	wlr_buffer_unlock(pass->buffer->buffer);
 	free(pass);
@@ -246,7 +247,7 @@ static const char *reset_status_str(GLenum status) {
 }
 
 struct wlr_gles2_render_pass *begin_gles2_buffer_pass(struct wlr_gles2_buffer *buffer,
-		struct wlr_gles2_render_timer *timer) {
+		struct wlr_egl_context *prev_ctx, struct wlr_gles2_render_timer *timer) {
 	struct wlr_gles2_renderer *renderer = buffer->renderer;
 	struct wlr_buffer *wlr_buffer = buffer->buffer;
 
@@ -259,6 +260,11 @@ struct wlr_gles2_render_pass *begin_gles2_buffer_pass(struct wlr_gles2_buffer *b
 		}
 	}
 
+	GLint fbo = gles2_buffer_get_fbo(buffer);
+	if (!fbo) {
+		return NULL;
+	}
+
 	struct wlr_gles2_render_pass *pass = calloc(1, sizeof(*pass));
 	if (pass == NULL) {
 		return NULL;
@@ -268,12 +274,13 @@ struct wlr_gles2_render_pass *begin_gles2_buffer_pass(struct wlr_gles2_buffer *b
 	wlr_buffer_lock(wlr_buffer);
 	pass->buffer = buffer;
 	pass->timer = timer;
+	pass->prev_ctx = *prev_ctx;
 
 	matrix_projection(pass->projection_matrix, wlr_buffer->width, wlr_buffer->height,
 		WL_OUTPUT_TRANSFORM_FLIPPED_180);
 
 	push_gles2_debug(renderer);
-	glBindFramebuffer(GL_FRAMEBUFFER, buffer->fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
 	glViewport(0, 0, wlr_buffer->width, wlr_buffer->height);
 	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);

@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -101,7 +100,6 @@ static void gamma_control_handle_set_gamma(struct wl_client *client,
 		goto error_table;
 	}
 	close(fd);
-	fd = -1;
 
 	free(gamma_control->table);
 	gamma_control->table = table;

@@ -1,0 +1,9 @@
+.debhelper/
+debhelper-build-stamp
+files
+*.debhelper.log
+*.substvars
+libwlroots-0.18-dev/
+libwlroots-0.18-examples/
+libwlroots-0.18/
+tmp/

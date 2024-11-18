@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,9 +13,9 @@ static uint32_t default_touch_down(struct wlr_seat_touch_grab *grab,
 			point->touch_id, point->sx, point->sy);
 }
 
-static void default_touch_up(struct wlr_seat_touch_grab *grab, uint32_t time,
+static uint32_t default_touch_up(struct wlr_seat_touch_grab *grab, uint32_t time,
 		struct wlr_touch_point *point) {
-	wlr_seat_touch_send_up(grab->seat, time, point->touch_id);
+	return wlr_seat_touch_send_up(grab->seat, time, point->touch_id);
 }
 
 static void default_touch_motion(struct wlr_seat_touch_grab *grab,
@@ -41,8 +40,8 @@ static void default_touch_cancel(struct wlr_seat_touch_grab *grab) {
 }
 
 static void default_touch_wl_cancel(struct wlr_seat_touch_grab *grab,
-		struct wlr_surface *surface) {
-	wlr_seat_touch_send_cancel(grab->seat, surface);
+		struct wlr_seat_client *seat_client) {
+	wlr_seat_touch_send_cancel(grab->seat, seat_client);
 }
 
 const struct wlr_touch_grab_interface default_touch_grab_impl = {
@@ -206,16 +205,16 @@ uint32_t wlr_seat_touch_notify_down(struct wlr_seat *seat,
 	return serial;
 }
 
-void wlr_seat_touch_notify_up(struct wlr_seat *seat, uint32_t time,
+uint32_t wlr_seat_touch_notify_up(struct wlr_seat *seat, uint32_t time,
 		int32_t touch_id) {
 	clock_gettime(CLOCK_MONOTONIC, &seat->last_event);
 	struct wlr_seat_touch_grab *grab = seat->touch_state.grab;
 	struct wlr_touch_point *point = wlr_seat_touch_get_point(seat, touch_id);
 	if (!point) {
-		return;
+		return 0;
 	}
 
-	grab->interface->up(grab, time, point);
+	return grab->interface->up(grab, time, point);
 
 	touch_point_destroy(point);
 }
@@ -243,17 +242,12 @@ void wlr_seat_touch_notify_frame(struct wlr_seat *seat) {
 }
 
 void wlr_seat_touch_notify_cancel(struct wlr_seat *seat,
-		struct wlr_surface *surface) {
+		struct wlr_seat_client *seat_client) {
 	struct wlr_seat_touch_grab *grab = seat->touch_state.grab;
 	if (grab->interface->wl_cancel) {
-		grab->interface->wl_cancel(grab, surface);
+		grab->interface->wl_cancel(grab, seat_client);
 	}
 
-	struct wl_client *client = wl_resource_get_client(surface->resource);
-	struct wlr_seat_client *seat_client = wlr_seat_client_for_wl_client(seat, client);
-	if (seat_client == NULL) {
-		return;
-	}
 	struct wlr_touch_point *point, *tmp;
 	wl_list_for_each_safe(point, tmp, &seat->touch_state.touch_points, link) {
 		if (point->client == seat_client) {
@@ -346,11 +340,11 @@ uint32_t wlr_seat_touch_send_down(struct wlr_seat *seat,
 	return serial;
 }
 
-void wlr_seat_touch_send_up(struct wlr_seat *seat, uint32_t time, int32_t touch_id) {
+uint32_t wlr_seat_touch_send_up(struct wlr_seat *seat, uint32_t time, int32_t touch_id) {
 	struct wlr_touch_point *point = wlr_seat_touch_get_point(seat, touch_id);
 	if (!point) {
 		wlr_log(WLR_ERROR, "got touch up for unknown touch point");
-		return;
+		return 0;
 	}
 
 	uint32_t serial = wlr_seat_client_next_serial(point->client);
@@ -363,6 +357,7 @@ void wlr_seat_touch_send_up(struct wlr_seat *seat, uint32_t time, int32_t touch_
 	}
 
 	point->client->needs_touch_frame = true;
+	return serial;
 }
 
 void wlr_seat_touch_send_motion(struct wlr_seat *seat, uint32_t time, int32_t touch_id,
@@ -400,13 +395,8 @@ void wlr_seat_touch_send_frame(struct wlr_seat *seat) {
 	}
 }
 
-void wlr_seat_touch_send_cancel(struct wlr_seat *seat, struct wlr_surface *surface) {
-	struct wl_client *client = wl_resource_get_client(surface->resource);
-	struct wlr_seat_client *seat_client = wlr_seat_client_for_wl_client(seat, client);
-	if (seat_client == NULL) {
-		return;
-	}
-
+void wlr_seat_touch_send_cancel(struct wlr_seat *seat,
+		struct wlr_seat_client *seat_client) {
 	struct wl_resource *resource;
 	wl_resource_for_each(resource, &seat_client->touches) {
 		if (seat_client_from_touch_resource(resource) == NULL) {

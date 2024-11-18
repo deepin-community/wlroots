@@ -60,11 +60,7 @@ struct wlr_vk_device {
 	struct wlr_vk_format_props *format_props;
 	struct wlr_drm_format_set dmabuf_render_formats;
 	struct wlr_drm_format_set dmabuf_texture_formats;
-
-	// supported formats for textures (contains only those formats
-	// that support everything we need for textures)
-	uint32_t shm_format_count;
-	uint32_t *shm_formats; // to implement vulkan_get_shm_texture_formats
+	struct wlr_drm_format_set shm_texture_formats;
 };
 
 // Tries to find the VkPhysicalDevice for the given drm fd.
@@ -87,7 +83,7 @@ int vulkan_find_mem_type(struct wlr_vk_device *device,
 struct wlr_vk_format {
 	uint32_t drm;
 	VkFormat vk;
-	bool is_srgb;
+	VkFormat vk_srgb; // sRGB version of the format, or 0 if nonexistent
 	bool is_ycbcr;
 };
 
@@ -101,6 +97,7 @@ const struct wlr_vk_format *vulkan_get_format_from_drm(uint32_t drm_format);
 struct wlr_vk_format_modifier_props {
 	VkDrmFormatModifierPropertiesEXT props;
 	VkExtent2D max_extent;
+	bool has_mutable_srgb;
 };
 
 struct wlr_vk_format_props {
@@ -109,6 +106,7 @@ struct wlr_vk_format_props {
 	struct {
 		VkExtent2D max_extent;
 		VkFormatFeatureFlags features;
+		bool has_mutable_srgb;
 	} shm;
 
 	struct {
@@ -123,7 +121,7 @@ struct wlr_vk_format_props {
 void vulkan_format_props_query(struct wlr_vk_device *dev,
 	const struct wlr_vk_format *format);
 const struct wlr_vk_format_modifier_props *vulkan_format_props_find_modifier(
-	struct wlr_vk_format_props *props, uint64_t mod, bool render);
+	const struct wlr_vk_format_props *props, uint64_t mod, bool render);
 void vulkan_format_props_finish(struct wlr_vk_format_props *props);
 
 struct wlr_vk_pipeline_layout_key {
@@ -159,6 +157,13 @@ enum wlr_vk_shader_source {
 	WLR_VK_SHADER_SOURCE_SINGLE_COLOR,
 };
 
+// Constants used to pick the color transform for the blend-to-output
+// fragment shader. Must match those in shaders/output.frag
+enum wlr_vk_output_transform {
+	WLR_VK_OUTPUT_TRANSFORM_INVERSE_SRGB = 0,
+	WLR_VK_OUTPUT_TRANSFORM_LUT3D = 1,
+};
+
 struct wlr_vk_pipeline_key {
 	struct wlr_vk_pipeline_layout_key layout;
 	enum wlr_vk_shader_source source;
@@ -182,9 +187,11 @@ struct wlr_vk_pipeline {
 struct wlr_vk_render_format_setup {
 	struct wl_list link; // wlr_vk_renderer.render_format_setups
 	const struct wlr_vk_format *render_format; // used in renderpass
+	bool use_blending_buffer;
 	VkRenderPass render_pass;
 
-	VkPipeline output_pipe;
+	VkPipeline output_pipe_srgb;
+	VkPipeline output_pipe_lut3d;
 
 	struct wlr_vk_renderer *renderer;
 	struct wl_list pipelines; // struct wlr_vk_pipeline.link
@@ -195,23 +202,43 @@ struct wlr_vk_render_buffer {
 	struct wlr_buffer *wlr_buffer;
 	struct wlr_addon addon;
 	struct wlr_vk_renderer *renderer;
-	struct wlr_vk_render_format_setup *render_setup;
 	struct wl_list link; // wlr_vk_renderer.buffers
 
-	VkImage image;
-	VkImageView image_view;
-	VkFramebuffer framebuffer;
-	uint32_t mem_count;
 	VkDeviceMemory memories[WLR_DMABUF_MAX_PLANES];
-	bool transitioned;
+	uint32_t mem_count;
+	VkImage image;
 
-	VkImage blend_image;
-	VkImageView blend_image_view;
-	VkDeviceMemory blend_memory;
-	VkDescriptorSet blend_descriptor_set;
-	struct wlr_vk_descriptor_pool *blend_attachment_pool;
-	bool blend_transitioned;
+	// Framebuffer and image view for rendering directly onto the buffer image.
+	// This requires that the image support an _SRGB VkFormat, and does
+	// not work with color transforms.
+	struct {
+		struct wlr_vk_render_format_setup *render_setup;
+		VkImageView image_view;
+		VkFramebuffer framebuffer;
+		bool transitioned;
+	} srgb;
+
+	// Framebuffer, image view, and blending image to render indirectly
+	// onto the buffer image. This works for general image types and permits
+	// color transforms.
+	struct {
+		struct wlr_vk_render_format_setup *render_setup;
+
+		VkImageView image_view;
+		VkFramebuffer framebuffer;
+		bool transitioned;
+
+		VkImage blend_image;
+		VkImageView blend_image_view;
+		VkDeviceMemory blend_memory;
+		VkDescriptorSet blend_descriptor_set;
+		struct wlr_vk_descriptor_pool *blend_attachment_pool;
+		bool blend_transitioned;
+	} plain;
 };
+
+bool vulkan_setup_plain_framebuffer(struct wlr_vk_render_buffer *buffer,
+	const struct wlr_dmabuf_attributes *dmabuf);
 
 struct wlr_vk_command_buffer {
 	VkCommandBuffer vk;
@@ -221,6 +248,8 @@ struct wlr_vk_command_buffer {
 	struct wl_list destroy_textures; // wlr_vk_texture.destroy_link
 	// Staging shared buffers to release after the command buffer completes
 	struct wl_list stage_buffers; // wlr_vk_shared_buffer.link
+	// Color transform to unref after the command buffer completes
+	struct wlr_color_transform *color_transform;
 
 	// For DMA-BUF implicit sync interop, may be NULL
 	VkSemaphore binary_semaphore;
@@ -245,23 +274,24 @@ struct wlr_vk_renderer {
 
 	// for blend->output subpass
 	VkPipelineLayout output_pipe_layout;
-	VkDescriptorSetLayout output_ds_layout;
+	VkDescriptorSetLayout output_ds_srgb_layout;
+	VkDescriptorSetLayout output_ds_lut3d_layout;
+	VkSampler output_sampler_lut3d;
+	// descriptor set indicating dummy 1x1x1 image, for use in the lut3d slot
+	VkDescriptorSet output_ds_lut3d_dummy;
+	struct wlr_vk_descriptor_pool *output_ds_lut3d_dummy_pool;
+
 	size_t last_output_pool_size;
 	struct wl_list output_descriptor_pools; // wlr_vk_descriptor_pool.link
 
+	// dummy sampler to bind when output shader is not using a lookup table
+	VkImage dummy3d_image;
+	VkDeviceMemory dummy3d_mem;
+	VkImageView dummy3d_image_view;
+	bool dummy3d_image_transitioned;
+
 	VkSemaphore timeline_semaphore;
 	uint64_t timeline_point;
-
-	struct wlr_vk_render_buffer *current_render_buffer;
-	struct wlr_vk_command_buffer *current_command_buffer;
-
-	VkRect2D scissor; // needed for clearing
-
-	VkPipeline bound_pipe;
-
-	uint32_t render_width;
-	uint32_t render_height;
-	float projection[9];
 
 	size_t last_pool_size;
 	struct wl_list descriptor_pools; // wlr_vk_descriptor_pool.link
@@ -273,6 +303,8 @@ struct wlr_vk_renderer {
 	struct wl_list foreign_textures; // wlr_vk_texture.foreign_link
 
 	struct wl_list render_buffers; // wlr_vk_render_buffer.link
+
+	struct wl_list color_transforms; // wlr_vk_color_transform.link
 
 	// Pool of command buffers
 	struct wlr_vk_command_buffer command_buffers[VULKAN_COMMAND_BUFFERS_CAP];
@@ -297,6 +329,11 @@ struct wlr_vk_vert_pcr_data {
 	float mat4[4][4];
 	float uv_off[2];
 	float uv_size[2];
+};
+
+struct wlr_vk_frag_output_pcr_data {
+	float lut_3d_offset;
+	float lut_3d_scale;
 };
 
 struct wlr_vk_texture_view {
@@ -339,10 +376,12 @@ struct wlr_vk_render_pass {
 	VkPipeline bound_pipeline;
 	float projection[9];
 	bool failed;
+	bool srgb_pathway; // if false, rendering via intermediate blending buffer
+	struct wlr_color_transform *color_transform;
 };
 
 struct wlr_vk_render_pass *vulkan_begin_render_pass(struct wlr_vk_renderer *renderer,
-	struct wlr_vk_render_buffer *buffer);
+	struct wlr_vk_render_buffer *buffer, const struct wlr_buffer_pass_options *options);
 
 // Suballocates a buffer span with the given size that can be mapped
 // and used as staging buffer. The allocation is implicitly released when the
@@ -383,6 +422,12 @@ bool vulkan_sync_render_buffer(struct wlr_vk_renderer *renderer,
 	struct wlr_vk_render_buffer *render_buffer, struct wlr_vk_command_buffer *cb);
 bool vulkan_sync_foreign_texture(struct wlr_vk_texture *texture);
 
+bool vulkan_read_pixels(struct wlr_vk_renderer *vk_renderer,
+	VkFormat src_format, VkImage src_image,
+	uint32_t drm_format, uint32_t stride,
+	uint32_t width, uint32_t height, uint32_t src_x, uint32_t src_y,
+	uint32_t dst_x, uint32_t dst_y, void *data);
+
 // State (e.g. image texture) associated with a surface.
 struct wlr_vk_texture {
 	struct wlr_texture wlr_texture;
@@ -397,6 +442,7 @@ struct wlr_vk_texture {
 	bool owned; // if dmabuf_imported: whether we have ownership of the image
 	bool transitioned; // if dma_imported: whether we transitioned it away from preinit
 	bool has_alpha; // whether the image is has alpha channel
+	bool using_mutable_srgb; // is this accessed through _SRGB format view
 	struct wl_list foreign_link; // wlr_vk_renderer.foreign_textures
 	struct wl_list destroy_link; // wlr_vk_command_buffer.destroy_textures
 	struct wl_list link; // wlr_vk_renderer.textures
@@ -414,7 +460,7 @@ struct wlr_vk_texture *vulkan_get_texture(struct wlr_texture *wlr_texture);
 VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 	const struct wlr_dmabuf_attributes *attribs,
 	VkDeviceMemory mems[static WLR_DMABUF_MAX_PLANES], uint32_t *n_mems,
-	bool for_render);
+	bool for_render, bool *using_mutable_srgb);
 struct wlr_texture *vulkan_texture_from_buffer(
 	struct wlr_renderer *wlr_renderer, struct wlr_buffer *buffer);
 void vulkan_texture_destroy(struct wlr_vk_texture *texture);
@@ -437,6 +483,7 @@ struct wlr_vk_shared_buffer {
 	VkBuffer buffer;
 	VkDeviceMemory memory;
 	VkDeviceSize buf_size;
+	void *cpu_mapping;
 	struct wl_array allocs; // struct wlr_vk_allocation
 };
 
@@ -446,13 +493,38 @@ struct wlr_vk_buffer_span {
 	struct wlr_vk_allocation alloc;
 };
 
+
+// Lookup table for a color transform
+struct wlr_vk_color_transform {
+	struct wlr_addon addon; // owned by: wlr_vk_renderer
+	struct wl_list link; // wlr_vk_renderer, list of all color transforms
+
+	struct {
+		VkImage image;
+		VkImageView image_view;
+		VkDeviceMemory memory;
+		VkDescriptorSet ds;
+		struct wlr_vk_descriptor_pool *ds_pool;
+	} lut_3d;
+};
+void vk_color_transform_destroy(struct wlr_addon *addon);
+
 // util
 const char *vulkan_strerror(VkResult err);
 void vulkan_change_layout(VkCommandBuffer cb, VkImage img,
 	VkImageLayout ol, VkPipelineStageFlags srcs, VkAccessFlags srca,
 	VkImageLayout nl, VkPipelineStageFlags dsts, VkAccessFlags dsta);
 
+#if __STDC_VERSION__ >= 202311L
+
+#define wlr_vk_error(fmt, res, ...) wlr_log(WLR_ERROR, fmt ": %s (%d)", \
+	vulkan_strerror(res), res __VA_OPT__(,) __VA_ARGS__)
+
+#else
+
 #define wlr_vk_error(fmt, res, ...) wlr_log(WLR_ERROR, fmt ": %s (%d)", \
 	vulkan_strerror(res), res, ##__VA_ARGS__)
+
+#endif
 
 #endif // RENDER_VULKAN_H

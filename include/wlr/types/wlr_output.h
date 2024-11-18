@@ -45,6 +45,7 @@ struct wlr_output_cursor {
 	int32_t hotspot_x, hotspot_y;
 	struct wlr_texture *texture;
 	bool own_texture;
+	struct wl_listener renderer_destroy;
 	struct wl_list link;
 };
 
@@ -120,14 +121,14 @@ struct wlr_render_pass;
  * The `frame` event will be emitted when it is a good time for the compositor
  * to submit a new frame.
  *
- * To render a new frame, compositors should call wlr_output_attach_render(),
- * render and call wlr_output_commit(). No rendering should happen outside a
- * `frame` event handler or before wlr_output_attach_render().
+ * To render a new frame compositors should call wlr_output_begin_render_pass(),
+ * perform rendering on that render pass, and finally call
+ * wlr_output_commit_state().
  */
 struct wlr_output {
 	const struct wlr_output_impl *impl;
 	struct wlr_backend *backend;
-	struct wl_display *display;
+	struct wl_event_loop *event_loop;
 
 	struct wl_global *global;
 	struct wl_list resources;
@@ -150,15 +151,17 @@ struct wlr_output {
 	enum wlr_output_adaptive_sync_status adaptive_sync_status;
 	uint32_t render_format;
 
+	// Indicates whether making changes to adaptive sync status is supported.
+	// If false, changes to adaptive sync status is guaranteed to fail. If
+	// true, changes may either succeed or fail.
+	bool adaptive_sync_supported;
+
 	bool needs_frame;
 	// damage for cursors and fullscreen surface, in output-local coordinates
 	bool frame_pending;
-	float transform_matrix[9];
 
 	// true for example with VR headsets
 	bool non_desktop;
-
-	struct wlr_output_state pending;
 
 	// Commit sequence number. Incremented on each commit, may overflow.
 	uint32_t commit_seq;
@@ -202,7 +205,6 @@ struct wlr_output {
 	struct wlr_allocator *allocator;
 	struct wlr_renderer *renderer;
 	struct wlr_swapchain *swapchain;
-	struct wlr_buffer *back_buffer;
 
 	struct wl_listener display_destroy;
 
@@ -271,23 +273,15 @@ struct wlr_output_event_request_state {
 
 struct wlr_surface;
 
-/**
- * Enables or disables the output. A disabled output is turned off and doesn't
- * emit `frame` events.
- *
- * Whether an output is enabled is double-buffered state, see
- * wlr_output_commit().
- */
-void wlr_output_enable(struct wlr_output *output, bool enable);
-void wlr_output_create_global(struct wlr_output *output);
+void wlr_output_create_global(struct wlr_output *output, struct wl_display *display);
 void wlr_output_destroy_global(struct wlr_output *output);
 /**
  * Initialize the output's rendering subsystem with the provided allocator and
  * renderer. After initialization, this function may invoked again to reinitialize
  * the allocator and renderer to different values.
  *
- * Call this function prior to any call to wlr_output_attach_render(),
- * wlr_output_commit() or wlr_output_cursor_create().
+ * Call this function prior to any call to wlr_output_begin_render_pass(),
+ * wlr_output_commit_state() or wlr_output_cursor_create().
  *
  * The buffer capabilities of the provided must match the capabilities of the
  * output's backend. Returns false otherwise.
@@ -299,72 +293,6 @@ bool wlr_output_init_render(struct wlr_output *output,
  * modes, returns NULL.
  */
 struct wlr_output_mode *wlr_output_preferred_mode(struct wlr_output *output);
-/**
- * Sets the output mode. The output needs to be enabled.
- *
- * Mode is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_set_mode(struct wlr_output *output,
-	struct wlr_output_mode *mode);
-/**
- * Sets a custom mode on the output.
- *
- * When the output advertises fixed modes, custom modes are not guaranteed to
- * work correctly, they may result in visual artifacts. If a suitable fixed mode
- * is available, compositors should prefer it and use wlr_output_set_mode()
- * instead of custom modes.
- *
- * Setting `refresh` to zero lets the backend pick a preferred value. The
- * output needs to be enabled.
- *
- * Custom mode is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_set_custom_mode(struct wlr_output *output, int32_t width,
-	int32_t height, int32_t refresh);
-/**
- * Sets a transform for the output.
- *
- * Transform is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_set_transform(struct wlr_output *output,
-	enum wl_output_transform transform);
-/**
- * Enables or disables adaptive sync (ie. variable refresh rate) on this
- * output. On some backends, this is just a hint and may be ignored.
- * Compositors can inspect `wlr_output.adaptive_sync_status` to query the
- * effective status. Backends that don't support adaptive sync will reject
- * the output commit.
- *
- * When enabled, compositors can submit frames a little bit later than the
- * deadline without dropping a frame.
- *
- * Adaptive sync is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_enable_adaptive_sync(struct wlr_output *output, bool enabled);
-/**
- * Set the output buffer render format. Default value: DRM_FORMAT_XRGB8888
- *
- * While high bit depth render formats are necessary for a monitor to receive
- * useful high bit data, they do not guarantee it; a DRM_FORMAT_XBGR2101010
- * buffer will only lead to sending 10-bpc image data to the monitor if
- * hardware and software permit this.
- *
- * This only affects the format of the output buffer used when rendering,
- * as with wlr_output_attach_render(). It has no impact on the cursor buffer
- * format, or on the formats supported for direct scan-out (see also
- * wlr_output_attach_buffer()).
- *
- * This format is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_set_render_format(struct wlr_output *output, uint32_t format);
-/**
- * Sets a scale for the output.
- *
- * Scale is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_set_scale(struct wlr_output *output, float scale);
-void wlr_output_set_subpixel(struct wlr_output *output,
-	enum wl_output_subpixel subpixel);
 /**
  * Set the output name.
  *
@@ -395,77 +323,6 @@ void wlr_output_transformed_resolution(struct wlr_output *output,
 void wlr_output_effective_resolution(struct wlr_output *output,
 	int *width, int *height);
 /**
- * Attach the renderer's buffer to the output. Compositors must call this
- * function before rendering. After they are done rendering, they should call
- * wlr_output_commit() to submit the new frame. The output needs to be
- * enabled.
- *
- * If non-NULL, `buffer_age` is set to the drawing buffer age in number of
- * frames or -1 if unknown. This is useful for damage tracking.
- *
- * If the compositor decides not to render after calling this function, it
- * must call wlr_output_rollback().
- */
-bool wlr_output_attach_render(struct wlr_output *output, int *buffer_age);
-/**
- * Attach a buffer to the output. Compositors should call wlr_output_commit()
- * to submit the new frame. The output needs to be enabled.
- *
- * Not all backends support direct scan-out on all buffers. Compositors can
- * check whether a buffer is supported by calling wlr_output_test().
- */
-void wlr_output_attach_buffer(struct wlr_output *output,
-	struct wlr_buffer *buffer);
-/**
- * Get the preferred format for reading pixels.
- * This function might change the current rendering context.
- */
-uint32_t wlr_output_preferred_read_format(struct wlr_output *output);
-/**
- * Set the damage region for the frame to be submitted. This is the region of
- * the screen that has changed since the last frame.
- *
- * Compositors implementing damage tracking should call this function with the
- * damaged region in output-buffer-local coordinates.
- *
- * This region is not to be confused with the renderer's buffer damage, ie. the
- * region compositors need to repaint. Compositors usually need to repaint more
- * than what changed since last frame since multiple render buffers are used.
- */
-void wlr_output_set_damage(struct wlr_output *output,
-	const pixman_region32_t *damage);
-/**
- * Set the output layers state.
- *
- * See struct wlr_output_layer for more details on output layers.
- *
- * This state is double-buffered, see wlr_output_commit(). The layers array
- * must remain valid until the wlr_output_test() or wlr_output_commit() call.
- */
-void wlr_output_set_layers(struct wlr_output *output,
-	struct wlr_output_layer_state *layers, size_t layers_len);
-/**
- * Test whether the pending output state would be accepted by the backend. If
- * this function returns true, wlr_output_commit() can only fail due to a
- * runtime error.
- *
- * This function doesn't mutate the pending state.
- */
-bool wlr_output_test(struct wlr_output *output);
-/**
- * Commit the pending output state. If wlr_output_attach_render() has been
- * called, the pending frame will be submitted for display and a `frame` event
- * will be scheduled.
- *
- * On failure, the pending changes are rolled back.
- */
-bool wlr_output_commit(struct wlr_output *output);
-/**
- * Discard the pending output state.
- */
-void wlr_output_rollback(struct wlr_output *output);
-
-/**
  * Test whether this output state would be accepted by the backend. If this
  * function returns true, wlr_output_commit_state() will only fail due to a
  * runtime error. This function does not change the current state of the
@@ -493,17 +350,6 @@ void wlr_output_schedule_frame(struct wlr_output *output);
  */
 size_t wlr_output_get_gamma_size(struct wlr_output *output);
 /**
- * Sets the gamma table for this output. `r`, `g` and `b` are gamma ramps for
- * red, green and blue. `size` is the length of the ramps and must not exceed
- * the value returned by wlr_output_get_gamma_size().
- *
- * Providing zero-sized ramps resets the gamma table.
- *
- * The gamma table is double-buffered state, see wlr_output_commit().
- */
-void wlr_output_set_gamma(struct wlr_output *output, size_t size,
-	const uint16_t *r, const uint16_t *g, const uint16_t *b);
-/**
  * Returns the wlr_output matching the provided wl_output resource. If the
  * resource isn't a wl_output, it aborts. If the resource is inert (because the
  * wlr_output has been destroyed), NULL is returned.
@@ -524,12 +370,6 @@ void wlr_output_lock_attach_render(struct wlr_output *output, bool lock);
  * a lock.
  */
 void wlr_output_lock_software_cursors(struct wlr_output *output, bool lock);
-/**
- * Renders software cursors. This is a utility function that can be called when
- * compositors render.
- */
-void wlr_output_render_software_cursors(struct wlr_output *output,
-	const pixman_region32_t *damage);
 /**
  * Render software cursors.
  *
@@ -724,24 +564,21 @@ bool wlr_output_configure_primary_swapchain(struct wlr_output *output,
 /**
  * Begin a render pass on this output.
  *
- * Same as wlr_output_attach_render(), but returns a struct wlr_render_pass.
+ * Compositors can call this function to begin rendering. After the render pass
+ * has been submitted, they should call wlr_output_commit_state() to submit the
+ * new frame.
+ *
+ * On error, NULL is returned. Creating a render pass on a disabled output is
+ * an error.
+ *
+ * The state describes the output changes the rendered frame will be
+ * committed with. A NULL state indicates no change.
+ *
+ * If non-NULL, buffer_age is set to the drawing buffer age in number of
+ * frames or -1 if unknown. This is useful for damage tracking.
  */
 struct wlr_render_pass *wlr_output_begin_render_pass(struct wlr_output *output,
-	struct wlr_output_state *state, int *buffer_age, struct wlr_render_timer *timer);
-
-
-/**
- * Returns the transform that, when composed with `tr`, gives
- * `WL_OUTPUT_TRANSFORM_NORMAL`.
- */
-enum wl_output_transform wlr_output_transform_invert(
-	enum wl_output_transform tr);
-
-/**
- * Returns a transform that, when applied, has the same effect as applying
- * sequentially `tr_a` and `tr_b`.
- */
-enum wl_output_transform wlr_output_transform_compose(
-	enum wl_output_transform tr_a, enum wl_output_transform tr_b);
+	struct wlr_output_state *state, int *buffer_age,
+	struct wlr_buffer_pass_options *render_options);
 
 #endif

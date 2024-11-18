@@ -1,5 +1,5 @@
-#if !defined(__FreeBSD__)
-#define _POSIX_C_SOURCE 200809L
+#if defined(__FreeBSD__)
+#undef _POSIX_C_SOURCE
 #endif
 #include <assert.h>
 #include <fcntl.h>
@@ -455,8 +455,8 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 	dev->drm_fd = -1;
 
 	// For dmabuf import we require at least the external_memory_fd,
-	// external_memory_dma_buf, queue_family_foreign and
-	// image_drm_format_modifier extensions.
+	// external_memory_dma_buf, queue_family_foreign,
+	// image_drm_format_modifier, and image_format_list extensions.
 	// The size is set to a large number to allow for other conditional
 	// extensions before the device is created
 	const char *extensions[32] = {0};
@@ -623,9 +623,8 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 
 	size_t max_fmts;
 	const struct wlr_vk_format *fmts = vulkan_get_format_list(&max_fmts);
-	dev->shm_formats = calloc(max_fmts, sizeof(*dev->shm_formats));
 	dev->format_props = calloc(max_fmts, sizeof(*dev->format_props));
-	if (!dev->shm_formats || !dev->format_props) {
+	if (!dev->format_props) {
 		wlr_log_errno(WLR_ERROR, "allocation failed");
 		goto error;
 	}
@@ -657,12 +656,12 @@ void vulkan_device_destroy(struct wlr_vk_device *dev) {
 
 	wlr_drm_format_set_finish(&dev->dmabuf_render_formats);
 	wlr_drm_format_set_finish(&dev->dmabuf_texture_formats);
+	wlr_drm_format_set_finish(&dev->shm_texture_formats);
 
 	for (unsigned i = 0u; i < dev->format_prop_count; ++i) {
 		vulkan_format_props_finish(&dev->format_props[i]);
 	}
 
-	free(dev->shm_formats);
 	free(dev->format_props);
 	free(dev);
 }

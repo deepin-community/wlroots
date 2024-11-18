@@ -1,7 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
-
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +8,7 @@
 #include <wlr/types/wlr_tablet_tool.h>
 #include <wlr/types/wlr_tablet_v2.h>
 #include <wlr/util/log.h>
-#include "tablet-unstable-v2-protocol.h"
+#include "tablet-v2-protocol.h"
 
 #define TABLET_MANAGER_VERSION 1
 

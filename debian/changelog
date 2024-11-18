@@ -1,20 +1,63 @@
+wlroots (0.18.1-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Guido Günther <agx@sigxcpu.org>  Sat, 05 Oct 2024 12:32:06 +0200
+
+wlroots (0.18.0-2) experimental; urgency=medium
+
+  * [fec682f] Build with support for xcb-errors
+    (Closes: #1072638)
+
+ -- Guido Günther <agx@sigxcpu.org>  Thu, 08 Aug 2024 12:25:56 +0200
+
+wlroots (0.18.0-1) experimental; urgency=medium
+
+  * Upload to experimental
+  * New upstream release
+  * [4225a2a] Rediff patches
+  * [c188450] gitignore generated files
+  * [89eb3b2] debian: Add wlroots version to package names.
+    Upstream now allows for parallel installation by encoding the API
+    version in the library name.
+  * [f996e82] tests: Run against 0.18
+  * [7c36c90] d/control: Bump libwayland and libdrm dependencies
+  * [a867c99] d/copyright: Update and sort.
+    Sort file list alphabetically, put recent dates first, use shared
+    license text for CC0-1.0.
+
+ -- Guido Günther <agx@sigxcpu.org>  Mon, 29 Jul 2024 11:26:23 +0200
+
 wlroots (0.17.4-1) unstable; urgency=medium
 
-  * Sync upstream
+  * New upstream release
 
- -- Dingyuan Zhang <zhangdingyuan@deepin.org>  Thu, 17 Oct 2024 11:32:00 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Mon, 01 Jul 2024 18:00:32 +0200
 
-wlroots (0.17.2-1deepin2) unstable; urgency=medium
+wlroots (0.17.3-2) unstable; urgency=medium
 
-  * Add deepin patchs
+  * Upload to unstable 
 
- -- Dingyuan Zhang <zhangdingyuan@deepin.org>  Wed, 28 Jun 2024 16:13:15 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Mon, 17 Jun 2024 07:35:17 +0200
 
-wlroots (0.17.2-1deepin1) unstable; urgency=medium
+wlroots (0.17.3-1) experimental; urgency=medium
 
-  * Add deepin patchs
+  * Upload to experimental
+  * New upstream release
+  * [9c7b1f8] Drop gles2-Avoid-crash-when-glGetInteger64vEXT-is-missing.patch:
+    Applied upstream
 
- -- xiangzelong <xiangzelong@deepin.org>  Wed, 08 May 2024 16:13:15 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Sat, 04 May 2024 14:28:54 +0200
+
+wlroots (0.17.2-2) unstable; urgency=medium
+
+  * Upload to unstable 
+  * Acknowledge NMU (Closes: #1063089)
+  * Use pkgconf
+  * Bump versions wayland-protocols dependency
+    Closes: #1029381, #1064497
+
+ -- Guido Günther <agx@sigxcpu.org>  Sat, 04 May 2024 09:31:44 +0200
 
 wlroots (0.17.2-1) experimental; urgency=medium
 
@@ -24,6 +67,13 @@ wlroots (0.17.2-1) experimental; urgency=medium
     Backport of upstream commit 341b3c8bd2387d9d6fb684e006a4eb45dfe09efa
 
  -- Guido Günther <agx@sigxcpu.org>  Tue, 12 Mar 2024 19:16:00 +0100
+
+wlroots (0.17.1-2.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Rename libraries for 64-bit time_t transition.  Closes: #1063089
+
+ -- Steve Langasek <vorlon@debian.org>  Thu, 29 Feb 2024 02:36:15 +0000
 
 wlroots (0.17.1-2) unstable; urgency=medium
 

@@ -6,10 +6,10 @@
 
 int main()
 {
-    struct wl_display *wld;
+    struct wl_event_loop *loop;
 
     wlr_log_init(WLR_DEBUG, NULL);
-    wld = wl_display_create();
-    assert(wlr_backend_autocreate(wld, NULL));
+    loop = wl_event_loop_create ();
+    assert(wlr_backend_autocreate(loop, NULL));
     return 0;
 }

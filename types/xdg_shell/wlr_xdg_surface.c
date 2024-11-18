@@ -256,23 +256,42 @@ static const struct xdg_surface_interface xdg_surface_implementation = {
 	.set_window_geometry = xdg_surface_handle_set_window_geometry,
 };
 
-static void xdg_surface_role_commit(struct wlr_surface *wlr_surface) {
+static void xdg_surface_role_client_commit(struct wlr_surface *wlr_surface) {
 	struct wlr_xdg_surface *surface = wlr_xdg_surface_try_from_wlr_surface(wlr_surface);
 	assert(surface != NULL);
 
-	if (wlr_surface_has_buffer(wlr_surface) && !surface->configured) {
-		wl_resource_post_error(surface->resource,
-			XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
-			"xdg_surface has never been configured");
+	if (wlr_surface_state_has_buffer(&wlr_surface->pending) && !surface->configured) {
+		wlr_surface_reject_pending(wlr_surface, surface->resource,
+			XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER, "xdg_surface has never been configured");
 		return;
 	}
 
 	if (surface->role_resource == NULL) {
-		wl_resource_post_error(surface->resource,
-			XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
-			"xdg_surface must have a role object");
+		wlr_surface_reject_pending(wlr_surface, surface->resource,
+			XDG_SURFACE_ERROR_NOT_CONSTRUCTED, "xdg_surface must have a role object");
 		return;
 	}
+
+	switch (surface->role) {
+	case WLR_XDG_SURFACE_ROLE_NONE:
+		assert(0 && "not reached");
+		return;
+	case WLR_XDG_SURFACE_ROLE_TOPLEVEL:
+		if (surface->toplevel != NULL) {
+			handle_xdg_toplevel_client_commit(surface->toplevel);
+		}
+		break;
+	case WLR_XDG_SURFACE_ROLE_POPUP:
+		if (surface->popup != NULL) {
+			handle_xdg_popup_client_commit(surface->popup);
+		}
+		break;
+	}
+}
+
+static void xdg_surface_role_commit(struct wlr_surface *wlr_surface) {
+	struct wlr_xdg_surface *surface = wlr_xdg_surface_try_from_wlr_surface(wlr_surface);
+	assert(surface != NULL);
 
 	if (surface->surface->unmap_commit) {
 		reset_xdg_surface_role_object(surface);
@@ -285,32 +304,20 @@ static void xdg_surface_role_commit(struct wlr_surface *wlr_surface) {
 		surface->initialized = true;
 	}
 
-	surface->current = surface->pending;
-
 	switch (surface->role) {
 	case WLR_XDG_SURFACE_ROLE_NONE:
 		assert(0 && "not reached");
 		return;
 	case WLR_XDG_SURFACE_ROLE_TOPLEVEL:
-		if (surface->toplevel != NULL) {
-			handle_xdg_toplevel_committed(surface->toplevel);
-		} else {
+		if (surface->toplevel == NULL) {
 			return;
 		}
 		break;
 	case WLR_XDG_SURFACE_ROLE_POPUP:
-		if (surface->popup != NULL) {
-			handle_xdg_popup_committed(surface->popup);
-		} else {
+		if (surface->popup == NULL) {
 			return;
 		}
 		break;
-	}
-
-	if (!surface->added) {
-		surface->added = true;
-		wl_signal_emit_mutable(&surface->client->shell->events.new_surface,
-			surface);
 	}
 
 	if (wlr_surface_has_buffer(wlr_surface)) {
@@ -328,10 +335,15 @@ static void xdg_surface_role_destroy(struct wlr_surface *wlr_surface) {
 	destroy_xdg_surface(surface);
 }
 
-static struct wlr_surface_role xdg_surface_role = {
+static const struct wlr_surface_role xdg_surface_role = {
 	.name = "xdg_surface",
+	.client_commit = xdg_surface_role_client_commit,
 	.commit = xdg_surface_role_commit,
 	.destroy = xdg_surface_role_destroy,
+};
+
+static const struct wlr_surface_synced_impl surface_synced_impl = {
+	.state_size = sizeof(struct wlr_xdg_surface_state),
 };
 
 struct wlr_xdg_surface *wlr_xdg_surface_try_from_wlr_surface(
@@ -349,10 +361,22 @@ void create_xdg_surface(struct wlr_xdg_client *client, struct wlr_surface *wlr_s
 		return;
 	}
 
+	if (wlr_surface_has_buffer(wlr_surface)) {
+		wl_resource_post_error(client->resource,
+			XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
+			"xdg_surface must not have a buffer at creation");
+		return;
+	}
+
 	struct wlr_xdg_surface *surface = calloc(1, sizeof(*surface));
 	if (surface == NULL) {
 		wl_client_post_no_memory(client->client);
 		return;
+	}
+
+	if (!wlr_surface_synced_init(&surface->synced, wlr_surface,
+			&surface_synced_impl, &surface->pending, &surface->current)) {
+		goto error_surface;
 	}
 
 	surface->client = client;
@@ -362,18 +386,7 @@ void create_xdg_surface(struct wlr_xdg_client *client, struct wlr_surface *wlr_s
 		&xdg_surface_interface, wl_resource_get_version(client->resource),
 		id);
 	if (surface->resource == NULL) {
-		free(surface);
-		wl_client_post_no_memory(client->client);
-		return;
-	}
-
-	if (wlr_surface_has_buffer(surface->surface)) {
-		wl_resource_destroy(surface->resource);
-		free(surface);
-		wl_resource_post_error(client->resource,
-			XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
-			"xdg_surface must not have a buffer at creation");
-		return;
+		goto error_synced;
 	}
 
 	wl_list_init(&surface->configure_list);
@@ -392,6 +405,16 @@ void create_xdg_surface(struct wlr_xdg_client *client, struct wlr_surface *wlr_s
 	wl_list_insert(&client->surfaces, &surface->link);
 
 	wlr_surface_set_role_object(wlr_surface, surface->resource);
+
+	wl_signal_emit_mutable(&surface->client->shell->events.new_surface, surface);
+
+	return;
+
+error_synced:
+	wlr_surface_synced_finish(&surface->synced);
+error_surface:
+	free(surface);
+	wl_client_post_no_memory(client->client);
 }
 
 bool set_xdg_surface_role(struct wlr_xdg_surface *surface, enum wlr_xdg_surface_role role) {
@@ -466,8 +489,10 @@ void destroy_xdg_surface(struct wlr_xdg_surface *surface) {
 	destroy_xdg_surface_role_object(surface);
 	reset_xdg_surface(surface);
 
-	wl_list_remove(&surface->link);
+	wl_signal_emit_mutable(&surface->events.destroy, NULL);
 
+	wl_list_remove(&surface->link);
+	wlr_surface_synced_finish(&surface->synced);
 	wl_resource_set_user_data(surface->resource, NULL);
 	free(surface);
 }

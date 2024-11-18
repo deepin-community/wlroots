@@ -3,12 +3,13 @@
 #include <drm_fourcc.h>
 #include <wlr/interfaces/wlr_output.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/swapchain.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/backend.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
+#include <wlr/util/transform.h>
 #include "wlr-screencopy-unstable-v1-protocol.h"
 #include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
@@ -194,11 +195,6 @@ static bool frame_shm_copy(struct wlr_screencopy_frame_v1 *frame,
 	struct wlr_renderer *renderer = output->renderer;
 	assert(renderer);
 
-	int x = frame->box.x;
-	int y = frame->box.y;
-	int width = frame->box.width;
-	int height = frame->box.height;
-
 	void *data;
 	uint32_t format;
 	size_t stride;
@@ -208,15 +204,29 @@ static bool frame_shm_copy(struct wlr_screencopy_frame_v1 *frame,
 	}
 
 	bool ok = false;
-	if (!renderer_bind_buffer(renderer, src_buffer)) {
+
+	struct wlr_texture *texture = wlr_texture_from_buffer(renderer, src_buffer);
+	if (!texture) {
+		wlr_log(WLR_DEBUG, "Failed to grab a texture from a buffer during shm screencopy");
 		goto out;
 	}
-	ok = wlr_renderer_read_pixels(renderer, format,
-		stride, width, height, x, y, 0, 0, data);
-	renderer_bind_buffer(renderer, NULL);
+
+	ok = wlr_texture_read_pixels(texture, &(struct wlr_texture_read_pixels_options) {
+		.data = data,
+		.format = format,
+		.stride = stride,
+		.src_box = frame->box,
+	});
+
+	wlr_texture_destroy(texture);
 
 out:
 	wlr_buffer_end_data_ptr_access(frame->buffer);
+
+	if (!ok) {
+		wlr_log(WLR_DEBUG, "Failed to copy to destination during shm screencopy");
+	}
+
 	return ok;
 }
 
@@ -227,10 +237,10 @@ static bool frame_dma_copy(struct wlr_screencopy_frame_v1 *frame,
 	struct wlr_renderer *renderer = output->renderer;
 	assert(renderer);
 
-
 	struct wlr_texture *src_tex =
 		wlr_texture_from_buffer(renderer, src_buffer);
 	if (src_tex == NULL) {
+		wlr_log(WLR_DEBUG, "Failed to grab a texture from a buffer during dma screencopy");
 		return false;
 	}
 
@@ -261,6 +271,11 @@ static bool frame_dma_copy(struct wlr_screencopy_frame_v1 *frame,
 
 out:
 	wlr_texture_destroy(src_tex);
+
+	if (!ok) {
+		wlr_log(WLR_DEBUG, "Failed to render to destination during dma screencopy");
+	}
+
 	return ok;
 }
 
@@ -270,8 +285,6 @@ static void frame_handle_output_commit(struct wl_listener *listener,
 		wl_container_of(listener, frame, output_commit);
 	struct wlr_output_event_commit *event = data;
 	struct wlr_output *output = frame->output;
-	struct wlr_renderer *renderer = output->renderer;
-	assert(renderer);
 
 	if (!(event->state->committed & WLR_OUTPUT_STATE_BUFFER)) {
 		return;
@@ -525,7 +538,25 @@ static void capture_output(struct wl_client *wl_client,
 	struct wlr_renderer *renderer = output->renderer;
 	assert(renderer);
 
-	frame->shm_format = wlr_output_preferred_read_format(frame->output);
+	if (!wlr_output_configure_primary_swapchain(output, NULL, &output->swapchain)) {
+		goto error;
+	}
+
+	int buffer_age;
+	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain, &buffer_age);
+	if (buffer == NULL) {
+		goto error;
+	}
+
+	struct wlr_texture *texture = wlr_texture_from_buffer(renderer, buffer);
+	wlr_buffer_unlock(buffer);
+	if (!texture) {
+		goto error;
+	}
+
+	frame->shm_format = wlr_texture_preferred_read_format(texture);
+	wlr_texture_destroy(texture);
+
 	if (frame->shm_format == DRM_FORMAT_INVALID) {
 		wlr_log(WLR_ERROR,
 			"Failed to capture output: no read format supported by renderer");

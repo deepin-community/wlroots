@@ -1,4 +1,3 @@
-#define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -21,13 +20,13 @@
 #include "render/pixel_format.h"
 
 #include "drm-client-protocol.h"
-#include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "linux-dmabuf-v1-client-protocol.h"
 #include "pointer-gestures-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
-#include "tablet-unstable-v2-client-protocol.h"
+#include "tablet-v2-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 
@@ -59,7 +58,7 @@ static int dispatch_events(int fd, uint32_t mask, void *data) {
 		if (mask & WL_EVENT_ERROR) {
 			wlr_log(WLR_ERROR, "Failed to read from remote Wayland display");
 		}
-		wl_display_terminate(wl->local_display);
+		wlr_backend_destroy(&wl->backend);
 		return 0;
 	}
 
@@ -77,7 +76,7 @@ static int dispatch_events(int fd, uint32_t mask, void *data) {
 
 	if (count < 0) {
 		wlr_log(WLR_ERROR, "Failed to dispatch remote Wayland display");
-		wl_display_terminate(wl->local_display);
+		wlr_backend_destroy(&wl->backend);
 		return 0;
 	}
 	return count;
@@ -179,7 +178,9 @@ static void linux_dmabuf_feedback_v1_handle_main_device(void *data,
 			"falling back to primary node", name);
 	}
 
-	feedback_data->backend->drm_render_name = strdup(name);
+	struct wlr_wl_backend *wl = feedback_data->backend;
+	assert(wl->drm_render_name == NULL);
+	wl->drm_render_name = strdup(name);
 
 	drmFreeDevice(&device);
 }
@@ -306,6 +307,7 @@ static char *get_render_name(const char *name) {
 static void legacy_drm_handle_device(void *data, struct wl_drm *drm,
 		const char *name) {
 	struct wlr_wl_backend *wl = data;
+	assert(wl->drm_render_name == NULL);
 	wl->drm_render_name = get_render_name(name);
 }
 
@@ -355,8 +357,8 @@ static void registry_global(void *data, struct wl_registry *registry,
 		if (version < 5) {
 			target_version = 5;
 		}
-		if (version > 8) {
-			target_version = 8;
+		if (version > 9) {
+			target_version = 9;
 		}
 		struct wl_seat *wl_seat = wl_registry_bind(registry, name,
 			&wl_seat_interface, target_version);
@@ -394,7 +396,11 @@ static void registry_global(void *data, struct wl_registry *registry,
 		wl->legacy_drm = wl_registry_bind(registry, name, &wl_drm_interface, 1);
 		wl_drm_add_listener(wl->legacy_drm, &legacy_drm_listener, wl);
 	} else if (strcmp(iface, wl_shm_interface.name) == 0) {
-		wl->shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+		uint32_t target_version = version;
+		if (version > 2) {
+			target_version = 2;
+		}
+		wl->shm = wl_registry_bind(registry, name, &wl_shm_interface, target_version);
 		wl_shm_add_listener(wl->shm, &shm_listener, wl);
 	} else if (strcmp(iface, xdg_activation_v1_interface.name) == 0) {
 		wl->activation_v1 = wl_registry_bind(registry, name,
@@ -480,7 +486,7 @@ static void backend_destroy(struct wlr_backend *backend) {
 
 	wlr_backend_finish(backend);
 
-	wl_list_remove(&wl->local_display_destroy.link);
+	wl_list_remove(&wl->event_loop_destroy.link);
 
 	wl_event_source_remove(wl->remote_display_src);
 
@@ -516,7 +522,11 @@ static void backend_destroy(struct wlr_backend *backend) {
 		wl_drm_destroy(wl->legacy_drm);
 	}
 	if (wl->shm) {
-		wl_shm_destroy(wl->shm);
+		if (wl_shm_get_version(wl->shm) >= WL_SHM_RELEASE_SINCE_VERSION) {
+			wl_shm_release(wl->shm);
+		} else {
+			wl_shm_destroy(wl->shm);
+		}
 	}
 	if (wl->zwp_relative_pointer_manager_v1) {
 		zwp_relative_pointer_manager_v1_destroy(wl->zwp_relative_pointer_manager_v1);
@@ -561,13 +571,12 @@ bool wlr_backend_is_wl(struct wlr_backend *b) {
 	return b->impl == &backend_impl;
 }
 
-static void handle_display_destroy(struct wl_listener *listener, void *data) {
-	struct wlr_wl_backend *wl =
-		wl_container_of(listener, wl, local_display_destroy);
+static void handle_event_loop_destroy(struct wl_listener *listener, void *data) {
+	struct wlr_wl_backend *wl = wl_container_of(listener, wl, event_loop_destroy);
 	backend_destroy(&wl->backend);
 }
 
-struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
+struct wlr_backend *wlr_wl_backend_create(struct wl_event_loop *loop,
 		struct wl_display *remote_display) {
 	wlr_log(WLR_INFO, "Creating wayland backend");
 
@@ -579,7 +588,7 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 
 	wlr_backend_init(&wl->backend, &backend_impl);
 
-	wl->local_display = display;
+	wl->event_loop = loop;
 	wl_list_init(&wl->outputs);
 	wl_list_init(&wl->seats);
 	wl_list_init(&wl->buffers);
@@ -615,6 +624,8 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 		goto error_registry;
 	}
 
+	wl_display_roundtrip(wl->remote_display); // process initial event bursts
+
 	struct zwp_linux_dmabuf_feedback_v1 *linux_dmabuf_feedback_v1 = NULL;
 	struct wlr_wl_linux_dmabuf_feedback_v1 feedback_data = { .backend = wl };
 	if (wl->zwp_linux_dmabuf_v1 != NULL &&
@@ -632,19 +643,20 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 		if (wl->legacy_drm != NULL) {
 			wl_drm_destroy(wl->legacy_drm);
 			wl->legacy_drm = NULL;
+
+			free(wl->drm_render_name);
+			wl->drm_render_name = NULL;
 		}
-	}
 
-	wl_display_roundtrip(wl->remote_display); // get linux-dmabuf formats
+		wl_display_roundtrip(wl->remote_display); // get linux-dmabuf feedback events
 
-	if (feedback_data.format_table != NULL) {
-		munmap(feedback_data.format_table, feedback_data.format_table_size);
-	}
-	if (linux_dmabuf_feedback_v1 != NULL) {
+		if (feedback_data.format_table != NULL) {
+			munmap(feedback_data.format_table, feedback_data.format_table_size);
+		}
+
 		zwp_linux_dmabuf_feedback_v1_destroy(linux_dmabuf_feedback_v1);
 	}
 
-	struct wl_event_loop *loop = wl_display_get_event_loop(wl->local_display);
 	int fd = wl_display_get_fd(wl->remote_display);
 	wl->remote_display_src = wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE,
 		dispatch_events, wl);
@@ -666,8 +678,8 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_display *display,
 		wl->drm_fd = -1;
 	}
 
-	wl->local_display_destroy.notify = handle_display_destroy;
-	wl_display_add_destroy_listener(display, &wl->local_display_destroy);
+	wl->event_loop_destroy.notify = handle_event_loop_destroy;
+	wl_event_loop_add_destroy_listener(loop, &wl->event_loop_destroy);
 
 	const char *token = getenv("XDG_ACTIVATION_TOKEN");
 	if (token != NULL) {

@@ -1,26 +1,26 @@
 project(
 	'wlroots',
 	'c',
-	version: '0.17.4',
+	version: '0.18.1',
 	license: 'MIT',
 	meson_version: '>=0.59.0',
 	default_options: [
-		'c_std=c11',
+		'c_std=' + (meson.version().version_compare('>=1.3.0') ? 'c23,c11' : 'c11'),
 		'warning_level=2',
 		'werror=true',
 	],
 )
 
-# When doing a major or minor release, *always* increase soversion. This isn't
-# necessary for bugfix releases. Increasing soversion is required because
-# wlroots never guarantees ABI stability -- only API stability is guaranteed
-# between minor releases.
-soversion = 12
+version = meson.project_version().split('-')[0]
+version_major = version.split('.')[0]
+version_minor = version.split('.')[1]
+versioned_name = '@0@-@1@.@2@'.format(meson.project_name(), version_major, version_minor)
 
 little_endian = target_machine.endian() == 'little'
 big_endian = target_machine.endian() == 'big'
 
 add_project_arguments([
+	'-D_POSIX_C_SOURCE=200809L',
 	'-DWLR_USE_UNSTABLE',
 	'-DWLR_LITTLE_ENDIAN=@0@'.format(little_endian.to_int()),
 	'-DWLR_BIG_ENDIAN=@0@'.format(big_endian.to_int()),
@@ -94,38 +94,27 @@ features = {
 	'vulkan-renderer': false,
 	'gbm-allocator': false,
 	'session': false,
+	'color-management': false,
 }
 internal_features = {
 	'xcb-errors': false,
 	'egl': false,
+	'libliftoff': false,
 }
 internal_config = configuration_data()
 
 wayland_project_options = ['tests=false', 'documentation=false']
 wayland_server = dependency('wayland-server',
-	version: '>=1.22',
+	version: '>=1.23',
 	fallback: 'wayland',
 	default_options: wayland_project_options,
 )
 
 drm = dependency('libdrm',
-	version: '>=2.4.114',
+	version: '>=2.4.122',
 	fallback: 'libdrm',
 	default_options: [
-		'intel=disabled',
-		'radeon=disabled',
-		'amdgpu=disabled',
-		'nouveau=disabled',
-		'vmwgfx=disabled',
-		'omap=disabled',
-		'exynos=disabled',
-		'freedreno=disabled',
-		'tegra=disabled',
-		'vc4=disabled',
-		'etnaviv=disabled',
-		'cairo-tests=disabled',
-		'man-pages=disabled',
-		'valgrind=disabled',
+		'auto_features=disabled',
 		'tests=false',
 	],
 )
@@ -173,8 +162,7 @@ wlr_inc = include_directories('include')
 symbols_file = 'wlroots.syms'
 symbols_flag = '-Wl,--version-script,@0@/@1@'.format(meson.current_source_dir(), symbols_file)
 lib_wlr = library(
-	meson.project_name(), wlr_files,
-	soversion: soversion.to_string(),
+	versioned_name, wlr_files,
 	dependencies: wlr_deps,
 	include_directories: [wlr_inc],
 	install: true,
@@ -194,7 +182,7 @@ wlroots = declare_dependency(
 	variables: wlr_vars,
 )
 
-meson.override_dependency('wlroots', wlroots)
+meson.override_dependency(versioned_name, wlroots)
 
 summary(features + internal_features, bool_yn: true)
 
@@ -206,7 +194,9 @@ endif
 pkgconfig = import('pkgconfig')
 pkgconfig.generate(
 	lib_wlr,
+	name: versioned_name,
 	description: 'Wayland compositor library',
+	subdirs: versioned_name,
 	url: 'https://gitlab.freedesktop.org/wlroots/wlroots',
 	variables: wlr_vars,
 )

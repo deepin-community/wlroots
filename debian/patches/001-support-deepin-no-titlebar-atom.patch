@@ -1,0 +1,32 @@
+Index: wlroots/include/xwayland/xwm.h
+===================================================================
+--- wlroots.orig/include/xwayland/xwm.h
++++ wlroots/include/xwayland/xwm.h
+@@ -90,6 +90,7 @@ enum atom_name {
+ 	NET_CLIENT_LIST,
+ 	NET_CLIENT_LIST_STACKING,
+ 	NET_WORKAREA,
++	DEEPIN_NO_TITLEBAR,
+ 	ATOM_LAST // keep last
+ };
+ 
+Index: wlroots/xwayland/xwm.c
+===================================================================
+--- wlroots.orig/xwayland/xwm.c
++++ wlroots/xwayland/xwm.c
+@@ -89,6 +89,7 @@ static const char *const atom_map[ATOM_L
+ 	[NET_CLIENT_LIST] = "_NET_CLIENT_LIST",
+ 	[NET_CLIENT_LIST_STACKING] = "_NET_CLIENT_LIST_STACKING",
+ 	[NET_WORKAREA] = "_NET_WORKAREA",
++	[DEEPIN_NO_TITLEBAR] = "_DEEPIN_NO_TITLEBAR",
+ };
+ 
+ #define STARTUP_INFO_REMOVE_PREFIX "remove: ID="
+@@ -2232,6 +2233,7 @@ struct wlr_xwm *xwm_create(struct wlr_xw
+ 		xwm->atoms[NET_WM_STATE_HIDDEN],
+ 		xwm->atoms[NET_CLIENT_LIST],
+ 		xwm->atoms[NET_CLIENT_LIST_STACKING],
++		xwm->atoms[DEEPIN_NO_TITLEBAR],
+ 	};
+ 	xcb_change_property(xwm->xcb_conn,
+ 		XCB_PROP_MODE_REPLACE,

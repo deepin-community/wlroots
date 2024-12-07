@@ -1,3 +1,9 @@
+wlroots (0.18.1-1deepin1) unstable; urgency=medium
+
+  * support DTK NOTITLEBAR
+
+ -- Dingyuan Zhang <zhangdingyuan@uniontech.com>  Sat, 07 Dec 2024 10:55:06 +0200
+
 wlroots (0.18.1-1) unstable; urgency=medium
 
   * New upstream release
@@ -36,7 +42,7 @@ wlroots (0.17.4-1) unstable; urgency=medium
 
 wlroots (0.17.3-2) unstable; urgency=medium
 
-  * Upload to unstable 
+  * Upload to unstable
 
  -- Guido Günther <agx@sigxcpu.org>  Mon, 17 Jun 2024 07:35:17 +0200
 
@@ -51,7 +57,7 @@ wlroots (0.17.3-1) experimental; urgency=medium
 
 wlroots (0.17.2-2) unstable; urgency=medium
 
-  * Upload to unstable 
+  * Upload to unstable
   * Acknowledge NMU (Closes: #1063089)
   * Use pkgconf
   * Bump versions wayland-protocols dependency

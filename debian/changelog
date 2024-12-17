@@ -1,3 +1,9 @@
+wlroots (0.18.1-1deepin2) unstable; urgency=medium
+
+  * rm NOTITLEBAR
+
+ -- Groveer <guoyao@uniontech.com>  Tue, 17 Dec 2024 20:58:52 +0800
+
 wlroots (0.18.1-1deepin1) unstable; urgency=medium
 
   * support DTK NOTITLEBAR

@@ -1,3 +1,9 @@
+wlroots (0.18.1-1deepin3) unstable; urgency=medium
+
+  * data-device: fix dnd handling during popup interactions
+
+ -- Groveer <guoyao@uniontech.com>  Fri, 20 Dec 2024 11:20:45 +0800
+
 wlroots (0.18.1-1deepin2) unstable; urgency=medium
 
   * rm NOTITLEBAR

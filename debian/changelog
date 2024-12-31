@@ -1,3 +1,9 @@
+wlroots (0.18.2-1deepin1) unstable; urgency=medium
+
+  * update 0.18.2.
+
+ -- lichenggang <lichenggang@deepin.org>  Tue, 31 Dec 2024 17:25:02 +0800
+
 wlroots (0.18.1-1deepin3) unstable; urgency=medium
 
   * data-device: fix dnd handling during popup interactions

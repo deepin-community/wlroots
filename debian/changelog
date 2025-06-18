@@ -1,26 +1,31 @@
-wlroots (0.18.2-1deepin1) unstable; urgency=medium
+wlroots (0.18.2-3) unstable; urgency=medium
 
-  * update 0.18.2.
+  * [378b702] seat: Don't forget to destroy touch points on touch up
+    This is a prereq for phoc/phosh to work.
 
- -- lichenggang <lichenggang@deepin.org>  Tue, 31 Dec 2024 17:25:02 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Thu, 30 Jan 2025 19:46:02 +0100
 
-wlroots (0.18.1-1deepin3) unstable; urgency=medium
+wlroots (0.18.2-2) unstable; urgency=medium
 
-  * data-device: fix dnd handling during popup interactions
+  [ Birger Schacht ]
+  * [c11c02a] d/control: add liblcms2-dev to Depends instead of only the test
+    Depends: (Closes: #1091944)
 
- -- Groveer <guoyao@uniontech.com>  Fri, 20 Dec 2024 11:20:45 +0800
+ -- Guido Günther <agx@sigxcpu.org>  Thu, 02 Jan 2025 19:31:31 +0100
 
-wlroots (0.18.1-1deepin2) unstable; urgency=medium
+wlroots (0.18.2-1) unstable; urgency=medium
 
-  * rm NOTITLEBAR
+  [ Guido Günther ]
+  * New upstream release
 
- -- Groveer <guoyao@uniontech.com>  Tue, 17 Dec 2024 20:58:52 +0800
+  [ Diederik de Haas ]
+  * [65600d4] d/control: Update Build Dependencies.
+  * [881be43] d/tests/control: Update Test Build Dependencies.
+    Debian commit 2a8b2e52aa3d ("Use pkgconf") switched from
+    ``pkg-config`` to ``pkgconf``, so update the test B-Ds as well.
+  * [bfe3f70] d/control: Add liblcms2-dev for color profile support.
 
-wlroots (0.18.1-1deepin1) unstable; urgency=medium
-
-  * support DTK NOTITLEBAR
-
- -- Dingyuan Zhang <zhangdingyuan@uniontech.com>  Sat, 07 Dec 2024 10:55:06 +0200
+ -- Guido Günther <agx@sigxcpu.org>  Tue, 31 Dec 2024 15:49:47 +0100
 
 wlroots (0.18.1-1) unstable; urgency=medium
 
@@ -60,7 +65,7 @@ wlroots (0.17.4-1) unstable; urgency=medium
 
 wlroots (0.17.3-2) unstable; urgency=medium
 
-  * Upload to unstable
+  * Upload to unstable 
 
  -- Guido Günther <agx@sigxcpu.org>  Mon, 17 Jun 2024 07:35:17 +0200
 
@@ -75,7 +80,7 @@ wlroots (0.17.3-1) experimental; urgency=medium
 
 wlroots (0.17.2-2) unstable; urgency=medium
 
-  * Upload to unstable
+  * Upload to unstable 
   * Acknowledge NMU (Closes: #1063089)
   * Use pkgconf
   * Bump versions wayland-protocols dependency

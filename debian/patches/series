@@ -1,2 +1,2 @@
 Revert-layer-shell-error-on-0-dimension-without-anchors.patch
-fix-dnd-handling-during-popup-interactions.patch
+seat-Don-t-forget-to-destroy-touch-points-on-touch-up.patch

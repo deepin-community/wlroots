@@ -1,13 +1,13 @@
 #include <assert.h>
-#include <backend/backend.h>
 #include <drm_fourcc.h>
 #include <stdlib.h>
+#include <wlr/backend.h>
 #include <wlr/interfaces/wlr_output.h>
+#include <wlr/render/allocator.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_output_layer.h>
 #include <wlr/util/log.h>
-#include "render/allocator/allocator.h"
 #include "types/wlr_output.h"
 #include "util/env.h"
 #include "util/global.h"
@@ -271,11 +271,6 @@ static void output_apply_state(struct wlr_output *output,
 		}
 	}
 
-	if ((state->committed & WLR_OUTPUT_STATE_BUFFER) &&
-			output->swapchain != NULL) {
-		wlr_swapchain_set_buffer_submitted(output->swapchain, state->buffer);
-	}
-
 	bool mode_updated = false;
 	if (state->committed & WLR_OUTPUT_STATE_MODE) {
 		int width = 0, height = 0, refresh = 0;
@@ -354,6 +349,7 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 	wl_list_init(&output->cursors);
 	wl_list_init(&output->layers);
 	wl_list_init(&output->resources);
+
 	wl_signal_init(&output->events.frame);
 	wl_signal_init(&output->events.damage);
 	wl_signal_init(&output->events.needs_frame);
@@ -380,18 +376,24 @@ void wlr_output_init(struct wlr_output *output, struct wlr_backend *backend,
 	}
 }
 
-void wlr_output_destroy(struct wlr_output *output) {
-	if (!output) {
-		return;
-	}
-
+void wlr_output_finish(struct wlr_output *output) {
 	wl_signal_emit_mutable(&output->events.destroy, output);
+	wlr_addon_set_finish(&output->addons);
+
+	assert(wl_list_empty(&output->events.frame.listener_list));
+	assert(wl_list_empty(&output->events.damage.listener_list));
+	assert(wl_list_empty(&output->events.needs_frame.listener_list));
+	assert(wl_list_empty(&output->events.precommit.listener_list));
+	assert(wl_list_empty(&output->events.commit.listener_list));
+	assert(wl_list_empty(&output->events.present.listener_list));
+	assert(wl_list_empty(&output->events.bind.listener_list));
+	assert(wl_list_empty(&output->events.description.listener_list));
+	assert(wl_list_empty(&output->events.request_state.listener_list));
+	assert(wl_list_empty(&output->events.destroy.listener_list));
 
 	wlr_output_destroy_global(output);
 
 	wl_list_remove(&output->display_destroy.link);
-
-	wlr_addon_set_finish(&output->addons);
 
 	// The backend is responsible for free-ing the list of modes
 
@@ -423,10 +425,17 @@ void wlr_output_destroy(struct wlr_output *output) {
 	free(output->make);
 	free(output->model);
 	free(output->serial);
+}
+
+void wlr_output_destroy(struct wlr_output *output) {
+	if (!output) {
+		return;
+	}
 
 	if (output->impl && output->impl->destroy) {
 		output->impl->destroy(output);
 	} else {
+		wlr_output_finish(output);
 		free(output);
 	}
 }
@@ -553,19 +562,52 @@ static uint32_t output_compare_state(struct wlr_output *output,
 static bool output_basic_test(struct wlr_output *output,
 		const struct wlr_output_state *state) {
 	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
-		// If the size doesn't match, reject buffer (scaling is not
-		// supported)
-		int pending_width, pending_height;
-		output_pending_resolution(output, state,
-			&pending_width, &pending_height);
-		if (state->buffer->width != pending_width ||
-				state->buffer->height != pending_height) {
-			wlr_log(WLR_DEBUG, "Primary buffer size mismatch");
+		struct wlr_fbox src_box;
+		output_state_get_buffer_src_box(state, &src_box);
+
+		// Source box must be contained within the buffer
+		if (src_box.x < 0.0 || src_box.y < 0.0 ||
+				src_box.x + src_box.width > state->buffer->width ||
+				src_box.y + src_box.height > state->buffer->height) {
+			wlr_log(WLR_ERROR, "Tried to commit with invalid buffer_src_box");
 			return false;
 		}
-	} else if (state->tearing_page_flip) {
-		wlr_log(WLR_ERROR, "Trying to commit a tearing page flip without a buffer?");
-		return false;
+
+		// Source box must not be empty (but it can be smaller than 1 pixel,
+		// some DRM devices support sub-pixel crops)
+		if (wlr_fbox_empty(&src_box)) {
+			wlr_log(WLR_ERROR, "Tried to commit with an empty buffer_src_box");
+			return false;
+		}
+
+		// Destination box cannot be entirely off-screen (but it also doesn't
+		// have to be entirely on-screen).  This also checks the dst box is
+		// not empty.
+		int pending_width, pending_height;
+		output_pending_resolution(output, state, &pending_width, &pending_height);
+		struct wlr_box output_box = {
+			.width = pending_width,
+			.height = pending_height
+		};
+		struct wlr_box dst_box;
+		output_state_get_buffer_dst_box(state, &dst_box);
+		if (!wlr_box_intersection(&output_box, &output_box, &dst_box)) {
+			wlr_log(WLR_ERROR, "Primary buffer is entirely off-screen or 0-sized");
+			return false;
+		}
+	} else {
+		if (state->tearing_page_flip) {
+			wlr_log(WLR_ERROR, "Tried to commit a tearing page flip without a buffer");
+			return false;
+		}
+		if (state->committed & WLR_OUTPUT_STATE_WAIT_TIMELINE) {
+			wlr_log(WLR_DEBUG, "Tried to set wait timeline without a buffer");
+			return false;
+		}
+		if (state->committed & WLR_OUTPUT_STATE_SIGNAL_TIMELINE) {
+			wlr_log(WLR_DEBUG, "Tried to set signal timeline without a buffer");
+			return false;
+		}
 	}
 
 	if (state->committed & WLR_OUTPUT_STATE_RENDER_FORMAT) {
@@ -630,6 +672,12 @@ static bool output_basic_test(struct wlr_output *output,
 		for (size_t i = 0; i < state->layers_len; i++) {
 			state->layers[i].accepted = false;
 		}
+	}
+
+	if ((state->committed & (WLR_OUTPUT_STATE_WAIT_TIMELINE | WLR_OUTPUT_STATE_SIGNAL_TIMELINE)) &&
+			!output->backend->features.timeline) {
+		wlr_log(WLR_DEBUG, "Wait/signal timelines are not supported for this output");
+		return false;
 	}
 
 	return true;
@@ -783,14 +831,12 @@ void wlr_output_send_present(struct wlr_output *output,
 	assert(event);
 	event->output = output;
 
-	struct timespec now;
-	if (event->presented && event->when == NULL) {
-		if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+	if (event->presented && (event->when.tv_sec == 0 && event->when.tv_nsec == 0)) {
+		if (clock_gettime(CLOCK_MONOTONIC, &event->when) != 0) {
 			wlr_log_errno(WLR_ERROR, "failed to send output present event: "
 				"failed to read clock");
 			return;
 		}
-		event->when = &now;
 	}
 
 	wl_signal_emit_mutable(&output->events.present, event);
@@ -834,6 +880,39 @@ void output_defer_present(struct wlr_output *output, struct wlr_output_event_pre
 
 	deferred->idle_source = wl_event_loop_add_idle(output->event_loop,
 		deferred_present_event_handle_idle, deferred);
+}
+
+void output_state_get_buffer_src_box(const struct wlr_output_state *state,
+		struct wlr_fbox *out) {
+	out->x = state->buffer_src_box.x;
+	out->y = state->buffer_src_box.y;
+	// If the source box is unset then default to the whole buffer.
+	if (state->buffer_src_box.width == 0.0 &&
+			state->buffer_src_box.height == 0.0) {
+		out->width = (double)state->buffer->width;
+		out->height = (double)state->buffer->height;
+	} else {
+		out->width = state->buffer_src_box.width;
+		out->height = state->buffer_src_box.height;
+	}
+}
+
+void output_state_get_buffer_dst_box(const struct wlr_output_state *state,
+		struct wlr_box *out) {
+	out->x = state->buffer_dst_box.x;
+	out->y = state->buffer_dst_box.y;
+	// If the dst box is unset then default to source crop size (which itself
+	// defaults to the whole buffer size if unset)
+	if (state->buffer_dst_box.width == 0 &&
+			state->buffer_dst_box.height == 0) {
+		struct wlr_fbox src_box;
+		output_state_get_buffer_src_box(state, &src_box);
+		out->width = (int)src_box.width;
+		out->height = (int)src_box.height;
+	} else {
+		out->width = state->buffer_dst_box.width;
+		out->height = state->buffer_dst_box.height;
+	}
 }
 
 void wlr_output_send_request_state(struct wlr_output *output,

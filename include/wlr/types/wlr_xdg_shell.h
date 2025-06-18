@@ -22,8 +22,6 @@ struct wlr_xdg_shell {
 	struct wl_list popup_grabs;
 	uint32_t ping_timeout;
 
-	struct wl_listener display_destroy;
-
 	struct {
 		struct wl_signal new_surface; // struct wlr_xdg_surface
 		struct wl_signal new_toplevel; // struct wlr_xdg_toplevel
@@ -32,6 +30,10 @@ struct wlr_xdg_shell {
 	} events;
 
 	void *data;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_xdg_client {
@@ -110,9 +112,9 @@ struct wlr_xdg_popup {
 
 	struct wl_list grab_link; // wlr_xdg_popup_grab.popups
 
-	// private state
-
-	struct wlr_surface_synced synced;
+	struct {
+		struct wlr_surface_synced synced;
+	} WLR_PRIVATE;
 };
 
 // each seat gets a popup grab
@@ -124,7 +126,10 @@ struct wlr_xdg_popup_grab {
 	struct wlr_seat *seat;
 	struct wl_list popups;
 	struct wl_list link; // wlr_xdg_shell.popup_grabs
-	struct wl_listener seat_destroy;
+
+	struct {
+		struct wl_listener seat_destroy;
+	} WLR_PRIVATE;
 };
 
 enum wlr_xdg_surface_role {
@@ -153,21 +158,33 @@ enum wlr_xdg_toplevel_configure_field {
 	WLR_XDG_TOPLEVEL_CONFIGURE_WM_CAPABILITIES = 1 << 1,
 };
 
+/**
+ * State set in an toplevel configure sequence.
+ */
 struct wlr_xdg_toplevel_configure {
+	// Bitmask of optional fields which are set
 	uint32_t fields; // enum wlr_xdg_toplevel_configure_field
+
+	// The following fields must always be set to reflect the current state
 	bool maximized, fullscreen, resizing, activated, suspended;
 	uint32_t tiled; // enum wlr_edges
 	int32_t width, height;
+
+	// Only for WLR_XDG_TOPLEVEL_CONFIGURE_BOUNDS
 	struct {
 		int32_t width, height;
 	} bounds;
+	// Only for WLR_XDG_TOPLEVEL_CONFIGURE_WM_CAPABILITIES
 	uint32_t wm_capabilities; // enum wlr_xdg_toplevel_wm_capabilities
 };
 
 struct wlr_xdg_toplevel_requested {
 	bool maximized, minimized, fullscreen;
 	struct wlr_output *fullscreen_output;
-	struct wl_listener fullscreen_output_destroy;
+
+	struct {
+		struct wl_listener fullscreen_output_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_xdg_toplevel {
@@ -175,7 +192,6 @@ struct wlr_xdg_toplevel {
 	struct wlr_xdg_surface *base;
 
 	struct wlr_xdg_toplevel *parent;
-	struct wl_listener parent_unmap;
 
 	struct wlr_xdg_toplevel_state current, pending;
 
@@ -212,9 +228,11 @@ struct wlr_xdg_toplevel {
 		struct wl_signal set_app_id;
 	} events;
 
-	// private state
+	struct {
+		struct wlr_surface_synced synced;
 
-	struct wlr_surface_synced synced;
+		struct wl_listener parent_unmap;
+	} WLR_PRIVATE;
 };
 
 struct wlr_xdg_surface_configure {
@@ -228,9 +246,16 @@ struct wlr_xdg_surface_configure {
 	};
 };
 
+enum wlr_xdg_surface_state_field {
+	WLR_XDG_SURFACE_STATE_WINDOW_GEOMETRY = 1 << 0,
+};
+
 struct wlr_xdg_surface_state {
-	uint32_t configure_serial;
+	uint32_t committed; // enum wlr_xdg_surface_state_field
+
 	struct wlr_box geometry;
+
+	uint32_t configure_serial;
 };
 
 /**
@@ -274,6 +299,8 @@ struct wlr_xdg_surface {
 	// Whether the latest commit is an initial commit
 	bool initial_commit;
 
+	struct wlr_box geometry;
+
 	struct {
 		struct wl_signal destroy;
 		struct wl_signal ping_timeout;
@@ -286,11 +313,11 @@ struct wlr_xdg_surface {
 
 	void *data;
 
-	// private state
+	struct {
+		struct wlr_surface_synced synced;
 
-	struct wlr_surface_synced synced;
-
-	struct wl_listener role_resource_destroy;
+		struct wl_listener role_resource_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_xdg_toplevel_move_event {
@@ -355,6 +382,12 @@ struct wlr_xdg_positioner *wlr_xdg_positioner_from_resource(
  * amount of time, the ping_timeout event will be emitted.
  */
 void wlr_xdg_surface_ping(struct wlr_xdg_surface *surface);
+
+/**
+ * Configure the toplevel. Returns the associated configure serial.
+ */
+uint32_t wlr_xdg_toplevel_configure(struct wlr_xdg_toplevel *toplevel,
+		const struct wlr_xdg_toplevel_configure *configure);
 
 /**
  * Request that this toplevel surface be the given size. Returns the associated
@@ -522,17 +555,6 @@ struct wlr_xdg_toplevel *wlr_xdg_toplevel_try_from_wlr_surface(struct wlr_surfac
  * been destroyed.
  */
 struct wlr_xdg_popup *wlr_xdg_popup_try_from_wlr_surface(struct wlr_surface *surface);
-
-/**
- * Get the surface geometry.
- *
- * This is either the geometry as set by the client, or defaulted to the bounds
- * of the surface + the subsurfaces (as specified by the protocol).
- *
- * The x and y value can be < 0.
- */
-void wlr_xdg_surface_get_geometry(struct wlr_xdg_surface *surface,
-		struct wlr_box *box);
 
 /**
  * Call `iterator` on each mapped surface and popup in the xdg-surface tree

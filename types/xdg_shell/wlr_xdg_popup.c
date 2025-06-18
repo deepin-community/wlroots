@@ -467,6 +467,9 @@ void destroy_xdg_popup(struct wlr_xdg_popup *popup) {
 
 	wl_signal_emit_mutable(&popup->events.destroy, NULL);
 
+	assert(wl_list_empty(&popup->events.destroy.listener_list));
+	assert(wl_list_empty(&popup->events.reposition.listener_list));
+
 	wlr_surface_synced_finish(&popup->synced);
 	popup->base->popup = NULL;
 	wl_list_remove(&popup->link);
@@ -498,8 +501,8 @@ void wlr_xdg_popup_get_toplevel_coords(struct wlr_xdg_popup *popup,
 			popup_sy += xdg_surface->popup->current.geometry.y;
 			parent = xdg_surface->popup->parent;
 		} else {
-			popup_sx += xdg_surface->current.geometry.x;
-			popup_sy += xdg_surface->current.geometry.y;
+			popup_sx += xdg_surface->geometry.x;
+			popup_sy += xdg_surface->geometry.y;
 			break;
 		}
 	}

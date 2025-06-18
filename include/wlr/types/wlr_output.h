@@ -17,6 +17,7 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/util/addon.h>
+#include <wlr/util/box.h>
 
 enum wlr_output_mode_aspect_ratio {
 	WLR_OUTPUT_MODE_ASPECT_RATIO_NONE,
@@ -45,8 +46,13 @@ struct wlr_output_cursor {
 	int32_t hotspot_x, hotspot_y;
 	struct wlr_texture *texture;
 	bool own_texture;
-	struct wl_listener renderer_destroy;
+	struct wlr_drm_syncobj_timeline *wait_timeline;
+	uint64_t wait_point;
 	struct wl_list link;
+
+	struct {
+		struct wl_listener renderer_destroy;
+	} WLR_PRIVATE;
 };
 
 enum wlr_output_adaptive_sync_status {
@@ -66,6 +72,8 @@ enum wlr_output_state_field {
 	WLR_OUTPUT_STATE_RENDER_FORMAT = 1 << 8,
 	WLR_OUTPUT_STATE_SUBPIXEL = 1 << 9,
 	WLR_OUTPUT_STATE_LAYERS = 1 << 10,
+	WLR_OUTPUT_STATE_WAIT_TIMELINE = 1 << 11,
+	WLR_OUTPUT_STATE_SIGNAL_TIMELINE = 1 << 12,
 };
 
 enum wlr_output_state_mode_type {
@@ -90,6 +98,16 @@ struct wlr_output_state {
 	enum wl_output_subpixel subpixel;
 
 	struct wlr_buffer *buffer;
+	// Source crop for the buffer.  If all zeros then no crop is applied.
+	// As usual with source crop, this is in buffer coordinates.
+	// Double-buffered by WLR_OUTPUT_STATE_BUFFER along with `buffer`.
+	struct wlr_fbox buffer_src_box;
+	// Destination rect to scale the buffer to (after source crop).  If width
+	// and height are zero then the buffer is displayed at native size.  The
+	// offset is relative to the origin of this output. Double-buffered by
+	// WLR_OUTPUT_STATE_BUFFER along with `buffer`.
+	struct wlr_box buffer_dst_box;
+
 	/* Request a tearing page-flip. When enabled, this may cause the output to
 	 * display a part of the previous buffer and a part of the current buffer at
 	 * the same time. The backend may reject the commit if a tearing page-flip
@@ -109,6 +127,11 @@ struct wlr_output_state {
 
 	struct wlr_output_layer_state *layers;
 	size_t layers_len;
+
+	struct wlr_drm_syncobj_timeline *wait_timeline;
+	uint64_t wait_point;
+	struct wlr_drm_syncobj_timeline *signal_timeline;
+	uint64_t signal_point;
 };
 
 struct wlr_output_impl;
@@ -206,11 +229,13 @@ struct wlr_output {
 	struct wlr_renderer *renderer;
 	struct wlr_swapchain *swapchain;
 
-	struct wl_listener display_destroy;
-
 	struct wlr_addon_set addons;
 
 	void *data;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_output_event_damage {
@@ -252,7 +277,7 @@ struct wlr_output_event_present {
 	// Whether the frame was presented at all.
 	bool presented;
 	// Time when the content update turned into light the first time.
-	struct timespec *when;
+	struct timespec when;
 	// Vertical retrace counter. Zero if unavailable.
 	unsigned seq;
 	// Prediction of how many nanoseconds after `when` the very next output
@@ -270,8 +295,6 @@ struct wlr_output_event_request_state {
 	struct wlr_output *output;
 	const struct wlr_output_state *state;
 };
-
-struct wlr_surface;
 
 void wlr_output_create_global(struct wlr_output *output, struct wl_display *display);
 void wlr_output_destroy_global(struct wlr_output *output);
@@ -371,7 +394,7 @@ void wlr_output_lock_attach_render(struct wlr_output *output, bool lock);
  */
 void wlr_output_lock_software_cursors(struct wlr_output *output, bool lock);
 /**
- * Render software cursors.
+ * Render software cursors. The damage is in buffer-local coordinate space.
  *
  * This is a utility function that can be called when compositors render.
  */
@@ -536,6 +559,33 @@ void wlr_output_state_set_damage(struct wlr_output_state *state,
  */
 void wlr_output_state_set_layers(struct wlr_output_state *state,
 	struct wlr_output_layer_state *layers, size_t layers_len);
+/**
+ * Set a timeline point to wait on before displaying the next frame.
+ *
+ * Committing a wait timeline point without a buffer is invalid.
+ *
+ * There is only a single wait timeline point, waiting for multiple timeline
+ * points is unsupported.
+ *
+ * Support for this feature is advertised by the timeline field in
+ * struct wlr_output.
+ */
+void wlr_output_state_set_wait_timeline(struct wlr_output_state *state,
+	struct wlr_drm_syncobj_timeline *timeline, uint64_t src_point);
+/**
+ * Set a timeline point to be signalled when the frame is no longer being used
+ * by the backend.
+ *
+ * Committing a signal timeline point without a buffer is invalid.
+ *
+ * There is only a single signal timeline point, signalling multiple timeline
+ * points is unsupported.
+ *
+ * Support for this feature is advertised by the timeline field in
+ * struct wlr_output.
+ */
+void wlr_output_state_set_signal_timeline(struct wlr_output_state *state,
+	struct wlr_drm_syncobj_timeline *timeline, uint64_t dst_point);
 
 /**
  * Copies the output state from src to dst. It is safe to then
@@ -578,7 +628,6 @@ bool wlr_output_configure_primary_swapchain(struct wlr_output *output,
  * frames or -1 if unknown. This is useful for damage tracking.
  */
 struct wlr_render_pass *wlr_output_begin_render_pass(struct wlr_output *output,
-	struct wlr_output_state *state, int *buffer_age,
-	struct wlr_buffer_pass_options *render_options);
+	struct wlr_output_state *state, struct wlr_buffer_pass_options *render_options);
 
 #endif

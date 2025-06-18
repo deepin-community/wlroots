@@ -7,7 +7,7 @@
 #include <wlr/util/addon.h>
 #include "presentation-time-protocol.h"
 
-#define PRESENTATION_VERSION 1
+#define PRESENTATION_VERSION 2
 
 struct wlr_presentation_surface_state {
 	struct wlr_presentation_feedback *feedback;
@@ -166,20 +166,25 @@ static void handle_display_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_presentation *presentation =
 		wl_container_of(listener, presentation, display_destroy);
 	wl_signal_emit_mutable(&presentation->events.destroy, presentation);
+
+	assert(wl_list_empty(&presentation->events.destroy.listener_list));
+
 	wl_list_remove(&presentation->display_destroy.link);
 	wl_global_destroy(presentation->global);
 	free(presentation);
 }
 
 struct wlr_presentation *wlr_presentation_create(struct wl_display *display,
-		struct wlr_backend *backend) {
+		struct wlr_backend *backend, uint32_t version) {
+	assert(version <= PRESENTATION_VERSION);
+
 	struct wlr_presentation *presentation = calloc(1, sizeof(*presentation));
 	if (presentation == NULL) {
 		return NULL;
 	}
 
 	presentation->global = wl_global_create(display, &wp_presentation_interface,
-		PRESENTATION_VERSION, NULL, presentation_bind);
+		version, NULL, presentation_bind);
 	if (presentation->global == NULL) {
 		free(presentation);
 		return NULL;
@@ -239,8 +244,8 @@ void wlr_presentation_event_from_output(struct wlr_presentation_event *event,
 		const struct wlr_output_event_present *output_event) {
 	*event = (struct wlr_presentation_event){
 		.output = output_event->output,
-		.tv_sec = (uint64_t)output_event->when->tv_sec,
-		.tv_nsec = (uint32_t)output_event->when->tv_nsec,
+		.tv_sec = (uint64_t)output_event->when.tv_sec,
+		.tv_nsec = (uint32_t)output_event->when.tv_nsec,
 		.refresh = (uint32_t)output_event->refresh,
 		.seq = (uint64_t)output_event->seq,
 		.flags = output_event->flags,
@@ -283,6 +288,11 @@ static void feedback_handle_output_present(struct wl_listener *listener,
 	if (output_event->presented) {
 		struct wlr_presentation_event event = {0};
 		wlr_presentation_event_from_output(&event, output_event);
+		struct wl_resource *resource = wl_resource_from_link(feedback->resources.next);
+		if (wl_resource_get_version(resource) == 1 &&
+				event.output->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED) {
+			event.refresh = 0;
+		}
 		if (!feedback->zero_copy) {
 			event.flags &= ~WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY;
 		}

@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <wlr/render/drm_syncobj.h>
+#include <wlr/util/addon.h>
 #include <wlr/util/log.h>
 
 #include "config.h"
@@ -12,18 +13,31 @@
 #include <sys/eventfd.h>
 #endif
 
-struct wlr_drm_syncobj_timeline *wlr_drm_syncobj_timeline_create(int drm_fd) {
+static struct wlr_drm_syncobj_timeline *timeline_create(int drm_fd, uint32_t handle) {
 	struct wlr_drm_syncobj_timeline *timeline = calloc(1, sizeof(*timeline));
 	if (timeline == NULL) {
 		return NULL;
 	}
+
 	timeline->drm_fd = drm_fd;
 	timeline->n_refs = 1;
+	timeline->handle = handle;
 
-	if (drmSyncobjCreate(drm_fd, 0, &timeline->handle) != 0) {
+	wlr_addon_set_init(&timeline->addons);
+
+	return timeline;
+}
+
+struct wlr_drm_syncobj_timeline *wlr_drm_syncobj_timeline_create(int drm_fd) {
+	uint32_t handle = 0;
+	if (drmSyncobjCreate(drm_fd, 0, &handle) != 0) {
 		wlr_log_errno(WLR_ERROR, "drmSyncobjCreate failed");
-		free(timeline);
 		return NULL;
+	}
+
+	struct wlr_drm_syncobj_timeline *timeline = timeline_create(drm_fd, handle);
+	if (timeline == NULL) {
+		drmSyncobjDestroy(drm_fd, handle);
 	}
 
 	return timeline;
@@ -31,17 +45,15 @@ struct wlr_drm_syncobj_timeline *wlr_drm_syncobj_timeline_create(int drm_fd) {
 
 struct wlr_drm_syncobj_timeline *wlr_drm_syncobj_timeline_import(int drm_fd,
 		int drm_syncobj_fd) {
-	struct wlr_drm_syncobj_timeline *timeline = calloc(1, sizeof(*timeline));
-	if (timeline == NULL) {
+	uint32_t handle = 0;
+	if (drmSyncobjFDToHandle(drm_fd, drm_syncobj_fd, &handle) != 0) {
+		wlr_log_errno(WLR_ERROR, "drmSyncobjFDToHandle failed");
 		return NULL;
 	}
-	timeline->drm_fd = drm_fd;
-	timeline->n_refs = 1;
 
-	if (drmSyncobjFDToHandle(drm_fd, drm_syncobj_fd, &timeline->handle) != 0) {
-		wlr_log_errno(WLR_ERROR, "drmSyncobjFDToHandle failed");
-		free(timeline);
-		return NULL;
+	struct wlr_drm_syncobj_timeline *timeline = timeline_create(drm_fd, handle);
+	if (timeline == NULL) {
+		drmSyncobjDestroy(drm_fd, handle);
 	}
 
 	return timeline;
@@ -63,8 +75,31 @@ void wlr_drm_syncobj_timeline_unref(struct wlr_drm_syncobj_timeline *timeline) {
 		return;
 	}
 
+	wlr_addon_set_finish(&timeline->addons);
 	drmSyncobjDestroy(timeline->drm_fd, timeline->handle);
 	free(timeline);
+}
+
+int wlr_drm_syncobj_timeline_export(struct wlr_drm_syncobj_timeline *timeline) {
+	int drm_syncobj_fd = -1;
+	if (drmSyncobjHandleToFD(timeline->drm_fd, timeline->handle, &drm_syncobj_fd) != 0) {
+		wlr_log_errno(WLR_ERROR, "drmSyncobjHandleToFD failed");
+		return -1;
+	}
+	return drm_syncobj_fd;
+}
+
+bool wlr_drm_syncobj_timeline_transfer(struct wlr_drm_syncobj_timeline *dst,
+		uint64_t dst_point, struct wlr_drm_syncobj_timeline *src, uint64_t src_point) {
+	assert(dst->drm_fd == src->drm_fd);
+
+	if (drmSyncobjTransfer(dst->drm_fd, dst->handle, dst_point,
+			src->handle, src_point, 0) != 0) {
+		wlr_log_errno(WLR_ERROR, "drmSyncobjTransfer failed");
+		return false;
+	}
+
+	return true;
 }
 
 int wlr_drm_syncobj_timeline_export_sync_file(struct wlr_drm_syncobj_timeline *timeline,
@@ -101,7 +136,7 @@ bool wlr_drm_syncobj_timeline_import_sync_file(struct wlr_drm_syncobj_timeline *
 	uint32_t syncobj_handle;
 	if (drmSyncobjCreate(timeline->drm_fd, 0, &syncobj_handle) != 0) {
 		wlr_log_errno(WLR_ERROR, "drmSyncobjCreate failed");
-		return -1;
+		return false;
 	}
 
 	if (drmSyncobjImportSyncFile(timeline->drm_fd, syncobj_handle,
@@ -157,13 +192,15 @@ static int handle_eventfd_ready(int ev_fd, uint32_t mask, void *data) {
 		}
 	}
 
-	wl_signal_emit_mutable(&waiter->events.ready, NULL);
+	waiter->callback(waiter);
 	return 0;
 }
 
 bool wlr_drm_syncobj_timeline_waiter_init(struct wlr_drm_syncobj_timeline_waiter *waiter,
 		struct wlr_drm_syncobj_timeline *timeline, uint64_t point, uint32_t flags,
-		struct wl_event_loop *loop) {
+		struct wl_event_loop *loop, wlr_drm_syncobj_timeline_ready_callback callback) {
+	assert(callback);
+
 	int ev_fd;
 #if HAVE_EVENTFD
 	ev_fd = eventfd(0, EFD_CLOEXEC);
@@ -175,7 +212,7 @@ bool wlr_drm_syncobj_timeline_waiter_init(struct wlr_drm_syncobj_timeline_waiter
 	wlr_log(WLR_ERROR, "eventfd() is unavailable");
 #endif
 	if (ev_fd < 0) {
-		return NULL;
+		return false;
 	}
 
 	struct drm_syncobj_eventfd syncobj_eventfd = {
@@ -187,26 +224,25 @@ bool wlr_drm_syncobj_timeline_waiter_init(struct wlr_drm_syncobj_timeline_waiter
 	if (drmIoctl(timeline->drm_fd, DRM_IOCTL_SYNCOBJ_EVENTFD, &syncobj_eventfd) != 0) {
 		wlr_log_errno(WLR_ERROR, "DRM_IOCTL_SYNCOBJ_EVENTFD failed");
 		close(ev_fd);
-		return NULL;
+		return false;
 	}
 
 	struct wl_event_source *source = wl_event_loop_add_fd(loop, ev_fd, WL_EVENT_READABLE, handle_eventfd_ready, waiter);
 	if (source == NULL) {
 		wlr_log(WLR_ERROR, "Failed to add FD to event loop");
 		close(ev_fd);
-		return NULL;
+		return false;
 	}
 
 	*waiter = (struct wlr_drm_syncobj_timeline_waiter){
 		.ev_fd = ev_fd,
 		.event_source = source,
+		.callback = callback,
 	};
-	wl_signal_init(&waiter->events.ready);
 	return true;
 }
 
 void wlr_drm_syncobj_timeline_waiter_finish(struct wlr_drm_syncobj_timeline_waiter *waiter) {
-	wl_list_remove(&waiter->events.ready.listener_list);
 	wl_event_source_remove(waiter->event_source);
 	close(waiter->ev_fd);
 }

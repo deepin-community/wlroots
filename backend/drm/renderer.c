@@ -1,31 +1,35 @@
 #include <assert.h>
 #include <drm_fourcc.h>
+#include <wlr/render/allocator.h>
+#include <wlr/render/drm_syncobj.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/util/log.h>
 #include "backend/drm/drm.h"
 #include "backend/drm/fb.h"
 #include "backend/drm/renderer.h"
-#include "backend/backend.h"
 #include "render/drm_format_set.h"
-#include "render/allocator/allocator.h"
 #include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
 
 bool init_drm_renderer(struct wlr_drm_backend *drm,
 		struct wlr_drm_renderer *renderer) {
+	wlr_log(WLR_DEBUG, "Creating multi-GPU renderer");
 	renderer->wlr_rend = renderer_autocreate_with_drm_fd(drm->fd);
 	if (!renderer->wlr_rend) {
-		wlr_log(WLR_ERROR, "Failed to create renderer");
+		return false;
+	}
+	if (wlr_renderer_get_texture_formats(renderer->wlr_rend, WLR_BUFFER_CAP_DMABUF) == NULL) {
+		wlr_log(WLR_ERROR, "Renderer did not support importing DMA-BUFs");
+		wlr_renderer_destroy(renderer->wlr_rend);
+		renderer->wlr_rend = NULL;
 		return false;
 	}
 
-	uint32_t backend_caps = backend_get_buffer_caps(&drm->backend);
-	renderer->allocator = allocator_autocreate_with_drm_fd(backend_caps,
-		renderer->wlr_rend, drm->fd);
+	renderer->allocator = wlr_allocator_autocreate(&drm->backend, renderer->wlr_rend);
 	if (renderer->allocator == NULL) {
-		wlr_log(WLR_ERROR, "Failed to create allocator");
 		wlr_renderer_destroy(renderer->wlr_rend);
+		renderer->wlr_rend = NULL;
 		return false;
 	}
 
@@ -46,6 +50,7 @@ void finish_drm_surface(struct wlr_drm_surface *surf) {
 		return;
 	}
 
+	wlr_drm_syncobj_timeline_unref(surf->timeline);
 	wlr_swapchain_destroy(surf->swapchain);
 
 	*surf = (struct wlr_drm_surface){0};
@@ -68,13 +73,24 @@ bool init_drm_surface(struct wlr_drm_surface *surf,
 		return false;
 	}
 
+	int drm_fd = wlr_renderer_get_drm_fd(renderer->wlr_rend);
+	if (renderer->wlr_rend->features.timeline && drm_fd >= 0) {
+		surf->timeline = wlr_drm_syncobj_timeline_create(drm_fd);
+		if (surf->timeline == NULL) {
+			finish_drm_surface(surf);
+			wlr_log(WLR_ERROR, "Failed to create DRM syncobj timeline");
+			return false;
+		}
+	}
+
 	surf->renderer = renderer;
 
 	return true;
 }
 
 struct wlr_buffer *drm_surface_blit(struct wlr_drm_surface *surf,
-		struct wlr_buffer *buffer) {
+		struct wlr_buffer *buffer,
+		struct wlr_drm_syncobj_timeline *wait_timeline, uint64_t wait_point) {
 	struct wlr_renderer *renderer = surf->renderer->wlr_rend;
 
 	if (surf->swapchain->width != buffer->width ||
@@ -89,13 +105,18 @@ struct wlr_buffer *drm_surface_blit(struct wlr_drm_surface *surf,
 		return NULL;
 	}
 
-	struct wlr_buffer *dst = wlr_swapchain_acquire(surf->swapchain, NULL);
+	struct wlr_buffer *dst = wlr_swapchain_acquire(surf->swapchain);
 	if (!dst) {
 		wlr_log(WLR_ERROR, "Failed to acquire multi-GPU swapchain buffer");
 		goto error_tex;
 	}
 
-	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, dst, NULL);
+	surf->point++;
+	const struct wlr_buffer_pass_options pass_options = {
+		.signal_timeline = surf->timeline,
+		.signal_point = surf->point,
+	};
+	struct wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, dst, &pass_options);
 	if (pass == NULL) {
 		wlr_log(WLR_ERROR, "Failed to begin render pass with multi-GPU destination buffer");
 		goto error_dst;
@@ -104,6 +125,8 @@ struct wlr_buffer *drm_surface_blit(struct wlr_drm_surface *surf,
 	wlr_render_pass_add_texture(pass, &(struct wlr_render_texture_options){
 		.texture = tex,
 		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+		.wait_timeline = wait_timeline,
+		.wait_point = wait_point,
 	});
 	if (!wlr_render_pass_submit(pass)) {
 		wlr_log(WLR_ERROR, "Failed to submit multi-GPU render pass");

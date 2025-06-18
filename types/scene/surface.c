@@ -4,7 +4,10 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_presentation_time.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/util/transform.h>
 #include "types/wlr_scene.h"
 
@@ -128,8 +131,8 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 			buffer_width, buffer_height);
 		wlr_output_transform_coords(state->transform, &buffer_width, &buffer_height);
 
-		src_box.x += (double)(clip->x * buffer_width) / state->width;
-		src_box.y += (double)(clip->y * buffer_height) / state->height;
+		src_box.x += (double)(clip->x * src_box.width) / state->width;
+		src_box.y += (double)(clip->y * src_box.height) / state->height;
 		src_box.width *= (double)width / state->width;
 		src_box.height *= (double)height / state->height;
 
@@ -164,8 +167,29 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 	if (surface->buffer) {
 		client_buffer_mark_next_can_damage(surface->buffer);
 
-		wlr_scene_buffer_set_buffer_with_damage(scene_buffer,
-			&surface->buffer->base, &surface->buffer_damage);
+		struct wlr_linux_drm_syncobj_surface_v1_state *syncobj_surface_state =
+			wlr_linux_drm_syncobj_v1_get_surface_state(surface);
+
+		struct wlr_drm_syncobj_timeline *wait_timeline = NULL;
+		uint64_t wait_point = 0;
+		if (syncobj_surface_state != NULL) {
+			wait_timeline = syncobj_surface_state->acquire_timeline;
+			wait_point = syncobj_surface_state->acquire_point;
+		}
+
+		struct wlr_scene_buffer_set_buffer_options options = {
+			.damage = &surface->buffer_damage,
+			.wait_timeline = wait_timeline,
+			.wait_point = wait_point,
+		};
+		wlr_scene_buffer_set_buffer_with_options(scene_buffer,
+			&surface->buffer->base, &options);
+
+		if (syncobj_surface_state != NULL &&
+				(surface->current.committed & WLR_SURFACE_STATE_BUFFER)) {
+			wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(syncobj_surface_state,
+				surface->buffer->source);
+		}
 	} else {
 		wlr_scene_buffer_set_buffer(scene_buffer, NULL);
 	}

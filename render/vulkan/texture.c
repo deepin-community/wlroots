@@ -208,12 +208,6 @@ void vulkan_texture_destroy(struct wlr_vk_texture *texture) {
 		free(view);
 	}
 
-	for (size_t i = 0; i < WLR_DMABUF_MAX_PLANES; i++) {
-		if (texture->foreign_semaphores[i] != VK_NULL_HANDLE) {
-			vkDestroySemaphore(dev, texture->foreign_semaphores[i], NULL);
-		}
-	}
-
 	vkDestroyImage(dev, texture->image, NULL);
 
 	for (unsigned i = 0u; i < texture->mem_count; ++i) {
@@ -390,6 +384,12 @@ static struct wlr_texture *vulkan_texture_from_pixels(
 		return NULL;
 	}
 
+	if (width > fmt->shm.max_extent.width || height > fmt->shm.max_extent.height) {
+		wlr_log(WLR_ERROR, "Texture is too large to upload (%"PRIu32"x%"PRIu32" > %"PRIu32"x%"PRIu32")",
+			width, height, fmt->shm.max_extent.width, fmt->shm.max_extent.height);
+		return NULL;
+	}
+
 	struct wlr_vk_texture *texture = vulkan_texture_create(renderer, width, height);
 	if (texture == NULL) {
 		return NULL;
@@ -534,7 +534,8 @@ VkImage vulkan_import_dmabuf(struct wlr_vk_renderer *renderer,
 
 	if ((uint32_t) attribs->width > mod->max_extent.width ||
 			(uint32_t) attribs->height > mod->max_extent.height) {
-		wlr_log(WLR_ERROR, "DMA-BUF is too large to import");
+		wlr_log(WLR_ERROR, "DMA-BUF is too large to import (%"PRIi32"x%"PRIi32" > %"PRIu32"x%"PRIu32")",
+			attribs->width, attribs->height, mod->max_extent.width, mod->max_extent.height);
 		return VK_NULL_HANDLE;
 	}
 

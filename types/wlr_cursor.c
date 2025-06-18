@@ -7,6 +7,7 @@
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_input_device.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_pointer.h>
@@ -246,6 +247,34 @@ static void cursor_reset_image(struct wlr_cursor *cur) {
 }
 
 void wlr_cursor_destroy(struct wlr_cursor *cur) {
+	// pointer signals
+	assert(wl_list_empty(&cur->events.motion.listener_list));
+	assert(wl_list_empty(&cur->events.motion_absolute.listener_list));
+	assert(wl_list_empty(&cur->events.button.listener_list));
+	assert(wl_list_empty(&cur->events.axis.listener_list));
+	assert(wl_list_empty(&cur->events.frame.listener_list));
+	assert(wl_list_empty(&cur->events.swipe_begin.listener_list));
+	assert(wl_list_empty(&cur->events.swipe_update.listener_list));
+	assert(wl_list_empty(&cur->events.swipe_end.listener_list));
+	assert(wl_list_empty(&cur->events.pinch_begin.listener_list));
+	assert(wl_list_empty(&cur->events.pinch_update.listener_list));
+	assert(wl_list_empty(&cur->events.pinch_end.listener_list));
+	assert(wl_list_empty(&cur->events.hold_begin.listener_list));
+	assert(wl_list_empty(&cur->events.hold_end.listener_list));
+
+	// touch signals
+	assert(wl_list_empty(&cur->events.touch_up.listener_list));
+	assert(wl_list_empty(&cur->events.touch_down.listener_list));
+	assert(wl_list_empty(&cur->events.touch_motion.listener_list));
+	assert(wl_list_empty(&cur->events.touch_cancel.listener_list));
+	assert(wl_list_empty(&cur->events.touch_frame.listener_list));
+
+	// tablet tool signals
+	assert(wl_list_empty(&cur->events.tablet_tool_tip.listener_list));
+	assert(wl_list_empty(&cur->events.tablet_tool_axis.listener_list));
+	assert(wl_list_empty(&cur->events.tablet_tool_button.listener_list));
+	assert(wl_list_empty(&cur->events.tablet_tool_proximity.listener_list));
+
 	cursor_reset_image(cur);
 	cursor_detach_output_layout(cur);
 
@@ -534,7 +563,7 @@ static void cursor_output_cursor_update(struct wlr_cursor_output_cursor *output_
 
 		output_cursor_set_texture(output_cursor->output_cursor, texture, true,
 			&src_box, dst_width, dst_height, WL_OUTPUT_TRANSFORM_NORMAL,
-			hotspot_x, hotspot_y);
+			hotspot_x, hotspot_y, NULL, 0);
 	} else if (cur->state->surface != NULL) {
 		struct wlr_surface *surface = cur->state->surface;
 
@@ -547,9 +576,24 @@ static void cursor_output_cursor_update(struct wlr_cursor_output_cursor *output_
 		int dst_width = surface->current.width;
 		int dst_height = surface->current.height;
 
+		struct wlr_linux_drm_syncobj_surface_v1_state *syncobj_surface_state =
+			wlr_linux_drm_syncobj_v1_get_surface_state(surface);
+		struct wlr_drm_syncobj_timeline *wait_timeline = NULL;
+		uint64_t wait_point = 0;
+		if (syncobj_surface_state != NULL) {
+			wait_timeline = syncobj_surface_state->acquire_timeline;
+			wait_point = syncobj_surface_state->acquire_point;
+		}
+
 		output_cursor_set_texture(output_cursor->output_cursor, texture, false,
 			&src_box, dst_width, dst_height, surface->current.transform,
-			hotspot_x, hotspot_y);
+			hotspot_x, hotspot_y, wait_timeline, wait_point);
+
+		if (syncobj_surface_state != NULL && surface->buffer != NULL &&
+				(surface->current.committed & WLR_SURFACE_STATE_BUFFER)) {
+			wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(syncobj_surface_state,
+				&surface->buffer->base);
+		}
 
 		if (output_cursor->output_cursor->visible) {
 			wlr_surface_send_enter(surface, output);
@@ -574,9 +618,15 @@ static void cursor_output_cursor_update(struct wlr_cursor_output_cursor *output_
 		wlr_xcursor_manager_load(manager, scale);
 		struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(manager, name, scale);
 		if (xcursor == NULL) {
-			wlr_log(WLR_DEBUG, "XCursor theme is missing '%s' cursor", name);
-			wlr_output_cursor_set_buffer(output_cursor->output_cursor, NULL, 0, 0);
-			return;
+			/* Try the default cursor: better the wrong image than an invisible
+			 * (and therefore practically unusable) cursor */
+			wlr_log(WLR_DEBUG, "XCursor theme is missing '%s' cursor, falling back to 'default'", name);
+			xcursor = wlr_xcursor_manager_get_xcursor(manager, "default", scale);
+			if (xcursor == NULL) {
+				wlr_log(WLR_DEBUG, "XCursor theme is missing a 'default' cursor");
+				wlr_output_cursor_set_buffer(output_cursor->output_cursor, NULL, 0, 0);
+				return;
+			}
 		}
 
 		output_cursor->xcursor = xcursor;

@@ -1,7 +1,5 @@
 #include <assert.h>
-#include <errno.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdlib.h>
@@ -14,7 +12,6 @@
 #include <wlr/util/log.h>
 #include <wlr/xwayland/shell.h>
 #include <wlr/xwayland/xwayland.h>
-#include "sockets.h"
 #include "xwayland/xwm.h"
 
 struct wlr_xwayland_cursor {
@@ -79,6 +76,13 @@ void wlr_xwayland_destroy(struct wlr_xwayland *xwayland) {
 		return;
 	}
 
+	wl_signal_emit_mutable(&xwayland->events.destroy, NULL);
+
+	assert(wl_list_empty(&xwayland->events.destroy.listener_list));
+	assert(wl_list_empty(&xwayland->events.new_surface.listener_list));
+	assert(wl_list_empty(&xwayland->events.ready.listener_list));
+	assert(wl_list_empty(&xwayland->events.remove_startup_info.listener_list));
+
 	wl_list_remove(&xwayland->server_destroy.link);
 	wl_list_remove(&xwayland->server_start.link);
 	wl_list_remove(&xwayland->server_ready.link);
@@ -105,6 +109,7 @@ struct wlr_xwayland *wlr_xwayland_create_with_server(struct wl_display *wl_displ
 	xwayland->wl_display = wl_display;
 	xwayland->compositor = compositor;
 
+	wl_signal_init(&xwayland->events.destroy);
 	wl_signal_init(&xwayland->events.new_surface);
 	wl_signal_init(&xwayland->events.ready);
 	wl_signal_init(&xwayland->events.remove_startup_info);

@@ -17,9 +17,19 @@ void wlr_buffer_init(struct wlr_buffer *buffer,
 		.width = width,
 		.height = height,
 	};
+
 	wl_signal_init(&buffer->events.destroy);
 	wl_signal_init(&buffer->events.release);
+
 	wlr_addon_set_init(&buffer->addons);
+}
+
+void wlr_buffer_finish(struct wlr_buffer *buffer) {
+	wl_signal_emit_mutable(&buffer->events.destroy, NULL);
+	wlr_addon_set_finish(&buffer->addons);
+
+	assert(wl_list_empty(&buffer->events.destroy.listener_list));
+	assert(wl_list_empty(&buffer->events.release.listener_list));
 }
 
 static void buffer_consider_destroy(struct wlr_buffer *buffer) {
@@ -28,9 +38,6 @@ static void buffer_consider_destroy(struct wlr_buffer *buffer) {
 	}
 
 	assert(!buffer->accessing_data_ptr);
-
-	wl_signal_emit_mutable(&buffer->events.destroy, NULL);
-	wlr_addon_set_finish(&buffer->addons);
 
 	buffer->impl->destroy(buffer);
 }
@@ -100,7 +107,7 @@ bool wlr_buffer_get_shm(struct wlr_buffer *buffer,
 	return buffer->impl->get_shm(buffer, attribs);
 }
 
-bool buffer_is_opaque(struct wlr_buffer *buffer) {
+bool wlr_buffer_is_opaque(struct wlr_buffer *buffer) {
 	void *data;
 	uint32_t format;
 	size_t stride;

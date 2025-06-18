@@ -23,9 +23,9 @@ struct wlr_subsurface_parent_state {
 	int32_t x, y;
 	struct wl_list link;
 
-	// private state
-
-	struct wlr_surface_synced *synced;
+	struct {
+		struct wlr_surface_synced *synced;
+	} WLR_PRIVATE;
 };
 
 struct wlr_subsurface {
@@ -41,32 +41,30 @@ struct wlr_subsurface {
 	bool synchronized;
 	bool added;
 
-	struct wl_listener surface_client_commit;
-	struct wl_listener parent_destroy;
-
 	struct {
 		struct wl_signal destroy;
 	} events;
 
 	void *data;
 
-	// private state
-
-	struct wlr_surface_synced parent_synced;
-
 	struct {
-		int32_t x, y;
-	} previous;
+		struct wlr_surface_synced parent_synced;
+
+		struct wl_listener surface_client_commit;
+		struct wl_listener parent_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_subcompositor {
 	struct wl_global *global;
 
-	struct wl_listener display_destroy;
-
 	struct {
 		struct wl_signal destroy;
 	} events;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 /**

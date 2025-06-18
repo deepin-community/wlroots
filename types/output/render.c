@@ -2,12 +2,11 @@
 #include <drm_fourcc.h>
 #include <stdlib.h>
 #include <wlr/interfaces/wlr_output.h>
+#include <wlr/render/allocator.h>
 #include <wlr/render/interface.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/util/log.h>
 #include <xf86drm.h>
-#include "backend/backend.h"
-#include "render/allocator/allocator.h"
 #include "render/drm_format_set.h"
 #include "render/wlr_renderer.h"
 #include "render/pixel_format.h"
@@ -17,14 +16,11 @@ bool wlr_output_init_render(struct wlr_output *output,
 		struct wlr_allocator *allocator, struct wlr_renderer *renderer) {
 	assert(allocator != NULL && renderer != NULL);
 
-	uint32_t backend_caps = backend_get_buffer_caps(output->backend);
-	uint32_t renderer_caps = renderer->render_buffer_caps;
-
-	if (!(backend_caps & allocator->buffer_caps)) {
+	if (!(output->backend->buffer_caps & allocator->buffer_caps)) {
 		wlr_log(WLR_ERROR, "output backend and allocator buffer capabilities "
 			"don't match");
 		return false;
-	} else if (!(renderer_caps & allocator->buffer_caps)) {
+	} else if (!(renderer->render_buffer_caps & allocator->buffer_caps)) {
 		wlr_log(WLR_ERROR, "renderer and allocator buffer capabilities "
 			"don't match");
 		return false;
@@ -55,7 +51,7 @@ static struct wlr_buffer *output_acquire_empty_buffer(struct wlr_output *output,
 		return NULL;
 	}
 
-	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain, NULL);
+	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain);
 	if (buffer == NULL) {
 		return NULL;
 	}
@@ -199,13 +195,12 @@ bool output_pick_format(struct wlr_output *output,
 }
 
 struct wlr_render_pass *wlr_output_begin_render_pass(struct wlr_output *output,
-		struct wlr_output_state *state, int *buffer_age,
-		struct wlr_buffer_pass_options *render_options) {
+		struct wlr_output_state *state, struct wlr_buffer_pass_options *render_options) {
 	if (!wlr_output_configure_primary_swapchain(output, state, &output->swapchain)) {
 		return NULL;
 	}
 
-	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain, buffer_age);
+	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain);
 	if (buffer == NULL) {
 		return NULL;
 	}

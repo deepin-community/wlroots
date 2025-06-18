@@ -12,13 +12,12 @@
 #include <wlr/render/egl.h>
 #include <wlr/render/interface.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_matrix.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
+#include <xf86drm.h>
 #include "render/egl.h"
 #include "render/gles2.h"
 #include "render/pixel_format.h"
-#include "types/wlr_matrix.h"
 #include "util/time.h"
 
 #include "common_vert_src.h"
@@ -259,7 +258,8 @@ static struct wlr_render_pass *gles2_begin_buffer_pass(struct wlr_renderer *wlr_
 		return NULL;
 	}
 
-	struct wlr_gles2_render_pass *pass = begin_gles2_buffer_pass(buffer, &prev_ctx, timer);
+	struct wlr_gles2_render_pass *pass = begin_gles2_buffer_pass(buffer,
+		&prev_ctx, timer, options->signal_timeline, options->signal_point);
 	if (!pass) {
 		return NULL;
 	}
@@ -682,6 +682,13 @@ struct wlr_renderer *wlr_gles2_renderer_create(struct wlr_egl *egl) {
 	wlr_egl_unset_current(renderer->egl);
 
 	get_gles2_shm_formats(renderer, &renderer->shm_texture_formats);
+
+	int drm_fd = wlr_renderer_get_drm_fd(&renderer->wlr_renderer);
+	uint64_t cap_syncobj_timeline;
+	if (drm_fd >= 0 && drmGetCap(drm_fd, DRM_CAP_SYNCOBJ_TIMELINE, &cap_syncobj_timeline) == 0) {
+		renderer->wlr_renderer.features.timeline = egl->procs.eglDupNativeFenceFDANDROID &&
+			egl->procs.eglWaitSyncKHR && cap_syncobj_timeline != 0;
+	}
 
 	return &renderer->wlr_renderer;
 

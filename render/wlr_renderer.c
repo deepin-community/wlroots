@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <wlr/backend.h>
 #include <wlr/render/interface.h>
 #include <wlr/render/pixman.h>
 #include <wlr/render/wlr_renderer.h>
@@ -24,8 +25,6 @@
 #include <wlr/render/vulkan.h>
 #endif // WLR_HAS_VULKAN_RENDERER
 
-#include "backend/backend.h"
-#include "render/pixel_format.h"
 #include "render/wlr_renderer.h"
 #include "util/env.h"
 
@@ -50,6 +49,9 @@ void wlr_renderer_destroy(struct wlr_renderer *r) {
 	}
 
 	wl_signal_emit_mutable(&r->events.destroy, r);
+
+	assert(wl_list_empty(&r->events.destroy.listener_list));
+	assert(wl_list_empty(&r->events.lost.listener_list));
 
 	if (r->impl && r->impl->destroy) {
 		r->impl->destroy(r);
@@ -143,6 +145,12 @@ static bool open_preferred_drm_fd(struct wlr_backend *backend, int *drm_fd_ptr,
 		return true;
 	}
 
+	if (env_parse_bool("WLR_RENDERER_FORCE_SOFTWARE")) {
+		*drm_fd_ptr = -1;
+		*own_drm_fd = false;
+		return true;
+	}
+
 	// Allow the user to override the render node
 	const char *render_name = getenv("WLR_RENDER_DRM_DEVICE");
 	if (render_name != NULL) {
@@ -174,8 +182,7 @@ static bool open_preferred_drm_fd(struct wlr_backend *backend, int *drm_fd_ptr,
 
 	// If the backend hasn't picked a DRM FD, but accepts DMA-BUFs, pick an
 	// arbitrary render node
-	uint32_t backend_caps = backend_get_buffer_caps(backend);
-	if (backend_caps & WLR_BUFFER_CAP_DMABUF) {
+	if (backend->buffer_caps & WLR_BUFFER_CAP_DMABUF) {
 		int drm_fd = open_drm_render_node();
 		if (drm_fd < 0) {
 			return false;
@@ -241,7 +248,7 @@ static struct wlr_renderer *renderer_autocreate(struct wlr_backend *backend, int
 		}
 	}
 
-	if (strcmp(renderer_name, "vulkan") == 0) {
+	if ((is_auto && WLR_HAS_VULKAN_RENDERER) || strcmp(renderer_name, "vulkan") == 0) {
 		if (!open_preferred_drm_fd(backend, &drm_fd, &own_drm_fd)) {
 			log_creation_failure(is_auto, "Cannot create Vulkan renderer: no DRM FD available");
 		} else {
@@ -273,6 +280,9 @@ out:
 	}
 	if (own_drm_fd && drm_fd >= 0) {
 		close(drm_fd);
+	}
+	if (renderer != NULL && env_parse_bool("WLR_RENDER_NO_EXPLICIT_SYNC")) {
+		renderer->features.timeline = false;
 	}
 	return renderer;
 }

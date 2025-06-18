@@ -55,7 +55,7 @@ static void xwm_dnd_send_event(struct wlr_xwm *xwm, xcb_atom_t type,
 		XCB_EVENT_MASK_NO_EVENT,
 		&event,
 		sizeof(event));
-	xcb_flush(xwm->xcb_conn);
+	xwm_schedule_flush(xwm);
 }
 
 static void xwm_dnd_send_enter(struct wlr_xwm *xwm) {
@@ -222,10 +222,7 @@ int xwm_handle_selection_client_message(struct wlr_xwm *xwm,
 		enum wl_data_device_manager_dnd_action action =
 			data_device_manager_dnd_action_from_atom(xwm, action_atom);
 
-		if (performed) {
-			wlr_data_source_dnd_finish(source);
-		}
-
+		wlr_data_source_dnd_finish(source);
 		wlr_log(WLR_DEBUG, "DND_FINISH window=%" PRIu32 " performed=%d action=%d",
 			target_window, performed, action);
 		return 1;

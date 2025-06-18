@@ -122,6 +122,11 @@ void wlr_seat_set_keyboard(struct wlr_seat *seat,
 		return;
 	}
 
+	// send the keymap only if it has changed
+	bool needs_keymap_update =
+		!seat->keyboard_state.keyboard || !keyboard ||
+		seat->keyboard_state.keyboard->keymap != keyboard->keymap;
+
 	if (seat->keyboard_state.keyboard) {
 		wl_list_remove(&seat->keyboard_state.keyboard_destroy.link);
 		wl_list_remove(&seat->keyboard_state.keyboard_keymap.link);
@@ -145,7 +150,9 @@ void wlr_seat_set_keyboard(struct wlr_seat *seat,
 
 		struct wlr_seat_client *client;
 		wl_list_for_each(client, &seat->clients, link) {
-			seat_client_send_keymap(client, keyboard);
+			if (needs_keymap_update) {
+				seat_client_send_keymap(client, keyboard);
+			}
 			seat_client_send_repeat_info(client, keyboard);
 		}
 
@@ -319,18 +326,15 @@ bool wlr_seat_keyboard_has_grab(struct wlr_seat *seat) {
 
 void wlr_seat_keyboard_notify_modifiers(struct wlr_seat *seat,
 		const struct wlr_keyboard_modifiers *modifiers) {
-	clock_gettime(CLOCK_MONOTONIC, &seat->last_event);
 	struct wlr_seat_keyboard_grab *grab = seat->keyboard_state.grab;
 	grab->interface->modifiers(grab, modifiers);
 }
 
 void wlr_seat_keyboard_notify_key(struct wlr_seat *seat, uint32_t time,
 		uint32_t key, uint32_t state) {
-	clock_gettime(CLOCK_MONOTONIC, &seat->last_event);
 	struct wlr_seat_keyboard_grab *grab = seat->keyboard_state.grab;
 	grab->interface->key(grab, time, key, state);
 }
-
 
 static void seat_client_send_keymap(struct wlr_seat_client *client,
 		struct wlr_keyboard *keyboard) {

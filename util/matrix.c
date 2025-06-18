@@ -1,10 +1,8 @@
-#include <math.h>
+#include <assert.h>
 #include <string.h>
 #include <wayland-server-protocol.h>
-#include <wlr/types/wlr_matrix.h>
-#include <wlr/types/wlr_output.h>
 #include <wlr/util/box.h>
-#include "types/wlr_matrix.h"
+#include "util/matrix.h"
 
 void wlr_matrix_identity(float mat[static 9]) {
 	static const float identity[9] = {
@@ -34,15 +32,6 @@ void wlr_matrix_multiply(float mat[static 9], const float a[static 9],
 	memcpy(mat, product, sizeof(product));
 }
 
-void wlr_matrix_transpose(float mat[static 9], const float a[static 9]) {
-	float transposition[9] = {
-		a[0], a[3], a[6],
-		a[1], a[4], a[7],
-		a[2], a[5], a[8],
-	};
-	memcpy(mat, transposition, sizeof(transposition));
-}
-
 void wlr_matrix_translate(float mat[static 9], float x, float y) {
 	float translate[9] = {
 		1.0f, 0.0f, x,
@@ -59,15 +48,6 @@ void wlr_matrix_scale(float mat[static 9], float x, float y) {
 		0.0f, 0.0f, 1.0f,
 	};
 	wlr_matrix_multiply(mat, mat, scale);
-}
-
-void wlr_matrix_rotate(float mat[static 9], float rad) {
-	float rotate[9] = {
-		cos(rad), -sin(rad), 0.0f,
-		sin(rad),  cos(rad), 0.0f,
-		0.0f,      0.0f,     1.0f,
-	};
-	wlr_matrix_multiply(mat, mat, rotate);
 }
 
 static const float transforms[][9] = {
@@ -141,8 +121,7 @@ void matrix_projection(float mat[static 9], int width, int height,
 }
 
 void wlr_matrix_project_box(float mat[static 9], const struct wlr_box *box,
-		enum wl_output_transform transform, float rotation,
-		const float projection[static 9]) {
+		enum wl_output_transform transform, const float projection[static 9]) {
 	int x = box->x;
 	int y = box->y;
 	int width = box->width;
@@ -150,12 +129,6 @@ void wlr_matrix_project_box(float mat[static 9], const struct wlr_box *box,
 
 	wlr_matrix_identity(mat);
 	wlr_matrix_translate(mat, x, y);
-
-	if (rotation != 0) {
-		wlr_matrix_translate(mat, width/2, height/2);
-		wlr_matrix_rotate(mat, rotation);
-		wlr_matrix_translate(mat, -width/2, -height/2);
-	}
 
 	wlr_matrix_scale(mat, width, height);
 
@@ -166,4 +139,27 @@ void wlr_matrix_project_box(float mat[static 9], const struct wlr_box *box,
 	}
 
 	wlr_matrix_multiply(mat, projection, mat);
+}
+
+void matrix_invert(float out[static 9], float m[static 9]) {
+	float a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5], g = m[6], h = m[7], i = m[8];
+
+	// See: https://en.wikipedia.org/wiki/Determinant
+	float det = a*e*i + b*f*g + c*d*h - c*e*g - b*d*i - a*f*h;
+	assert(det != 0);
+	float inv_det = 1 / det;
+
+	// See: https://en.wikipedia.org/wiki/Invertible_matrix#Inversion_of_3_%C3%97_3_matrices
+	float result[] = {
+		inv_det * (e*i - f*h),
+		inv_det * -(b*i - c*h),
+		inv_det * (b*f - c*e),
+		inv_det * -(d*i - f*g),
+		inv_det * (a*i - c*g),
+		inv_det * -(a*f - c*d),
+		inv_det * (d*h - e*g),
+		inv_det * -(a*h - b*g),
+		inv_det * (a*e - b*d),
+	};
+	memcpy(out, result, sizeof(result));
 }

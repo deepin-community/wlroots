@@ -191,32 +191,40 @@ static int handle_udev_event(int fd, uint32_t mask, void *data) {
 		goto out;
 	}
 
+	dev_t devnum = udev_device_get_devnum(udev_dev);
 	if (strcmp(action, "add") == 0) {
+		struct wlr_device *dev;
+		wl_list_for_each(dev, &session->devices, link) {
+			if (dev->dev == devnum) {
+				wlr_log(WLR_DEBUG, "Skipping duplicate device %s", sysname);
+				goto out;
+			}
+		}
+
 		wlr_log(WLR_DEBUG, "DRM device %s added", sysname);
 		struct wlr_session_add_event event = {
 			.path = devnode,
 		};
 		wl_signal_emit_mutable(&session->events.add_drm_card, &event);
-	} else if (strcmp(action, "change") == 0 || strcmp(action, "remove") == 0) {
-		dev_t devnum = udev_device_get_devnum(udev_dev);
+	} else if (strcmp(action, "change") == 0) {
 		struct wlr_device *dev;
 		wl_list_for_each(dev, &session->devices, link) {
-			if (dev->dev != devnum) {
-				continue;
-			}
-
-			if (strcmp(action, "change") == 0) {
+			if (dev->dev == devnum) {
 				wlr_log(WLR_DEBUG, "DRM device %s changed", sysname);
 				struct wlr_device_change_event event = {0};
 				read_udev_change_event(&event, udev_dev);
 				wl_signal_emit_mutable(&dev->events.change, &event);
-			} else if (strcmp(action, "remove") == 0) {
+				break;
+			}
+		}
+	} else if (strcmp(action, "remove") == 0) {
+		struct wlr_device *dev;
+		wl_list_for_each(dev, &session->devices, link) {
+			if (dev->dev == devnum) {
 				wlr_log(WLR_DEBUG, "DRM device %s removed", sysname);
 				wl_signal_emit_mutable(&dev->events.remove, NULL);
-			} else {
-				assert(0);
+				break;
 			}
-			break;
 		}
 	}
 
@@ -295,6 +303,11 @@ void wlr_session_destroy(struct wlr_session *session) {
 	}
 
 	wl_signal_emit_mutable(&session->events.destroy, session);
+
+	assert(wl_list_empty(&session->events.active.listener_list));
+	assert(wl_list_empty(&session->events.add_drm_card.listener_list));
+	assert(wl_list_empty(&session->events.destroy.listener_list));
+
 	wl_list_remove(&session->event_loop_destroy.link);
 
 	wl_event_source_remove(session->udev_event);
@@ -352,6 +365,10 @@ void wlr_session_close_file(struct wlr_session *session,
 	if (libseat_close_device(session->seat_handle, dev->device_id) == -1) {
 		wlr_log_errno(WLR_ERROR, "Failed to close device %d", dev->device_id);
 	}
+
+	assert(wl_list_empty(&dev->events.change.listener_list));
+	assert(wl_list_empty(&dev->events.remove.listener_list));
+
 	close(dev->fd);
 	wl_list_remove(&dev->link);
 	free(dev);

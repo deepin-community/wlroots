@@ -33,6 +33,8 @@ static void subsurface_destroy(struct wlr_subsurface *subsurface) {
 
 	wl_signal_emit_mutable(&subsurface->events.destroy, subsurface);
 
+	assert(wl_list_empty(&subsurface->events.destroy.listener_list));
+
 	wlr_surface_synced_finish(&subsurface->parent_synced);
 
 	wl_list_remove(&subsurface->surface_client_commit.link);
@@ -289,9 +291,6 @@ void subsurface_handle_parent_commit(struct wlr_subsurface *subsurface) {
 			subsurface);
 		subsurface_consider_map(subsurface);
 	}
-
-	subsurface->previous.x = subsurface->current.x;
-	subsurface->previous.y = subsurface->current.y;
 }
 
 struct wlr_subsurface *wlr_subsurface_try_from_wlr_surface(struct wlr_surface *surface) {
@@ -409,6 +408,9 @@ static void subcompositor_handle_display_destroy(
 	struct wlr_subcompositor *subcompositor =
 		wl_container_of(listener, subcompositor, display_destroy);
 	wl_signal_emit_mutable(&subcompositor->events.destroy, NULL);
+
+	assert(wl_list_empty(&subcompositor->events.destroy.listener_list));
+
 	wl_list_remove(&subcompositor->display_destroy.link);
 	wl_global_destroy(subcompositor->global);
 	free(subcompositor);

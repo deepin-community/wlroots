@@ -1,10 +1,8 @@
 #include <assert.h>
-#include <errno.h>
 #include <drm_fourcc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <wayland-server-core.h>
 #include <wlr/backend/interface.h>
 #include <wlr/backend/session.h>
@@ -13,6 +11,7 @@
 #include <xf86drm.h>
 #include "backend/drm/drm.h"
 #include "backend/drm/fb.h"
+#include "render/drm_format_set.h"
 
 struct wlr_drm_backend *get_drm_backend_from_backend(
 		struct wlr_backend *wlr_backend) {
@@ -53,7 +52,8 @@ static void backend_destroy(struct wlr_backend *backend) {
 	wl_list_remove(&drm->dev_change.link);
 	wl_list_remove(&drm->dev_remove.link);
 
-	if (drm->parent) {
+	if (drm->mgpu_renderer.wlr_rend) {
+		wlr_drm_format_set_finish(&drm->mgpu_formats);
 		finish_drm_renderer(&drm->mgpu_renderer);
 	}
 
@@ -75,10 +75,6 @@ static int backend_get_drm_fd(struct wlr_backend *backend) {
 	return drm->fd;
 }
 
-static uint32_t backend_get_buffer_caps(struct wlr_backend *backend) {
-	return WLR_BUFFER_CAP_DMABUF;
-}
-
 static bool backend_test(struct wlr_backend *backend,
 		const struct wlr_backend_output_state *states, size_t states_len) {
 	struct wlr_drm_backend *drm = get_drm_backend_from_backend(backend);
@@ -95,7 +91,6 @@ static const struct wlr_backend_impl backend_impl = {
 	.start = backend_start,
 	.destroy = backend_destroy,
 	.get_drm_fd = backend_get_drm_fd,
-	.get_buffer_caps = backend_get_buffer_caps,
 	.test = backend_test,
 	.commit = backend_commit,
 };
@@ -117,11 +112,18 @@ static void handle_session_active(struct wl_listener *listener, void *data) {
 	wlr_log(WLR_INFO, "DRM FD %s", session->active ? "resumed" : "paused");
 
 	if (!session->active) {
+		// Disconnect any active connectors so that the client will modeset and
+		// rerender when the session is activated again.
+		struct wlr_drm_connector *conn;
+		wl_list_for_each(conn, &drm->connectors, link) {
+			if (conn->status == DRM_MODE_CONNECTED) {
+				wlr_output_destroy(&conn->output);
+			}
+		}
 		return;
 	}
 
 	scan_drm_connectors(drm, NULL);
-	restore_drm_device(drm);
 }
 
 static void handle_dev_change(struct wl_listener *listener, void *data) {
@@ -165,6 +167,44 @@ static void handle_parent_destroy(struct wl_listener *listener, void *data) {
 	backend_destroy(&drm->backend);
 }
 
+static void sanitize_mgpu_modifiers(struct wlr_drm_format_set *set) {
+	for (size_t idx = 0; idx < set->len; idx++) {
+		// Implicit modifiers are not well-defined across devices, so strip
+		// them from all formats in multi-gpu scenarios.
+		struct wlr_drm_format *fmt = &set->formats[idx];
+		wlr_drm_format_set_remove(set, fmt->format, DRM_FORMAT_MOD_INVALID);
+	}
+}
+
+static bool init_mgpu_renderer(struct wlr_drm_backend *drm) {
+	if (!init_drm_renderer(drm, &drm->mgpu_renderer)) {
+		wlr_log(WLR_INFO, "Failed to initialize mgpu blit renderer"
+			", falling back to scanning out from primary GPU");
+
+		for (uint32_t plane_idx = 0; plane_idx < drm->num_planes; plane_idx++) {
+			struct wlr_drm_plane *plane = &drm->planes[plane_idx];
+			sanitize_mgpu_modifiers(&plane->formats);
+		}
+		return true;
+	}
+
+	// We'll perform a multi-GPU copy for all submitted buffers, we need
+	// to be able to texture from them
+	struct wlr_renderer *renderer = drm->mgpu_renderer.wlr_rend;
+	const struct wlr_drm_format_set *texture_formats =
+		wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+	if (texture_formats == NULL) {
+		wlr_log(WLR_ERROR, "Failed to query renderer texture formats");
+		return false;
+	}
+
+	wlr_drm_format_set_copy(&drm->mgpu_formats, texture_formats);
+	sanitize_mgpu_modifiers(&drm->mgpu_formats);
+	drm->backend.features.timeline = drm->backend.features.timeline &&
+		drm->mgpu_renderer.wlr_rend->features.timeline;
+	return true;
+}
+
 struct wlr_backend *wlr_drm_backend_create(struct wlr_session *session,
 		struct wlr_device *dev, struct wlr_backend *parent) {
 	assert(session && dev);
@@ -191,6 +231,8 @@ struct wlr_backend *wlr_drm_backend_create(struct wlr_session *session,
 		return NULL;
 	}
 	wlr_backend_init(&drm->backend, &backend_impl);
+
+	drm->backend.buffer_caps = WLR_BUFFER_CAP_DMABUF;
 
 	drm->session = session;
 	wl_list_init(&drm->fbs);
@@ -234,34 +276,8 @@ struct wlr_backend *wlr_drm_backend_create(struct wlr_session *session,
 		goto error_event;
 	}
 
-	if (drm->parent) {
-		if (!init_drm_renderer(drm, &drm->mgpu_renderer)) {
-			wlr_log(WLR_ERROR, "Failed to initialize renderer");
-			goto error_resources;
-		}
-
-		// We'll perform a multi-GPU copy for all submitted buffers, we need
-		// to be able to texture from them
-		struct wlr_renderer *renderer = drm->mgpu_renderer.wlr_rend;
-		const struct wlr_drm_format_set *texture_formats =
-			wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
-		if (texture_formats == NULL) {
-			wlr_log(WLR_ERROR, "Failed to query renderer texture formats");
-			goto error_mgpu_renderer;
-		}
-
-		// Forbid implicit modifiers, because their meaning changes from one
-		// GPU to another.
-		for (size_t i = 0; i < texture_formats->len; i++) {
-			const struct wlr_drm_format *fmt = &texture_formats->formats[i];
-			for (size_t j = 0; j < fmt->len; j++) {
-				uint64_t mod = fmt->modifiers[j];
-				if (mod == DRM_FORMAT_MOD_INVALID) {
-					continue;
-				}
-				wlr_drm_format_set_add(&drm->mgpu_formats, fmt->format, mod);
-			}
-		}
+	if (drm->parent && !init_mgpu_renderer(drm)) {
+		goto error_mgpu_renderer;
 	}
 
 	drm->session_destroy.notify = handle_session_destroy;
@@ -271,7 +287,6 @@ struct wlr_backend *wlr_drm_backend_create(struct wlr_session *session,
 
 error_mgpu_renderer:
 	finish_drm_renderer(&drm->mgpu_renderer);
-error_resources:
 	finish_drm_resources(drm);
 error_event:
 	wl_list_remove(&drm->session_active.link);

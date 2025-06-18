@@ -16,13 +16,15 @@ struct wlr_ext_foreign_toplevel_list_v1 {
 	struct wl_list resources; // wl_resource_get_link()
 	struct wl_list toplevels; // ext_foreign_toplevel_handle_v1.link
 
-	struct wl_listener display_destroy;
-
 	struct {
 		struct wl_signal destroy;
 	} events;
 
 	void *data;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_ext_foreign_toplevel_handle_v1 {
@@ -63,5 +65,8 @@ void wlr_ext_foreign_toplevel_handle_v1_destroy(
 void wlr_ext_foreign_toplevel_handle_v1_update_state(
 	struct wlr_ext_foreign_toplevel_handle_v1 *toplevel,
 	const struct wlr_ext_foreign_toplevel_handle_v1_state *state);
+
+struct wlr_ext_foreign_toplevel_handle_v1 *wlr_ext_foreign_toplevel_handle_v1_from_resource(
+	struct wl_resource *resource);
 
 #endif

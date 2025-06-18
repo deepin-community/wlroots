@@ -1,5 +1,6 @@
 Author: Lu YaNing <luyaning@uniontech.com>
-Date:   Fir Dec 20 10:05:24 2024 +0800
+Update: xiangzelong <xiangzelong@deepin.org>
+Date:   Wed, 18 Jun 2025 15:04:59 +0800
 Subject: data-device: fix dnd handling during popup interactions
 
     When a popup appears during dnd operations in wlroots-based
@@ -14,8 +15,15 @@ Subject: data-device: fix dnd handling during popup interactions
     propagation during popup interactions.
 Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
 
---- wlroots-0.18.1.orig/types/seat/wlr_seat_pointer.c
-+++ wlroots-0.18.1/types/seat/wlr_seat_pointer.c
+---
+ types/seat/wlr_seat_pointer.c   |  6 ++++
+ types/xdg_shell/wlr_xdg_popup.c | 63 +++++++++++++++++++++++++++++++--
+ 2 files changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/types/seat/wlr_seat_pointer.c b/types/seat/wlr_seat_pointer.c
+index 41729dc..d578d0a 100644
+--- a/types/seat/wlr_seat_pointer.c
++++ b/types/seat/wlr_seat_pointer.c
 @@ -4,6 +4,7 @@
  #include <time.h>
  #include <wayland-server-core.h>
@@ -23,8 +31,8 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
 +#include <wlr/types/wlr_data_device.h>
  #include <wlr/util/log.h>
  #include "types/wlr_seat.h"
- #include "util/set.h"
-@@ -417,6 +418,11 @@ void wlr_seat_pointer_start_grab(struct
+ 
+@@ -416,6 +417,11 @@ void wlr_seat_pointer_start_grab(struct wlr_seat *wlr_seat,
  	grab->seat = wlr_seat;
  	wlr_seat->pointer_state.grab = grab;
  
@@ -36,8 +44,10 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
  	wl_signal_emit_mutable(&wlr_seat->events.pointer_grab_begin, grab);
  }
  
---- wlroots-0.18.1.orig/types/xdg_shell/wlr_xdg_popup.c
-+++ wlroots-0.18.1/types/xdg_shell/wlr_xdg_popup.c
+diff --git a/types/xdg_shell/wlr_xdg_popup.c b/types/xdg_shell/wlr_xdg_popup.c
+index 25c07c8..90d4007 100644
+--- a/types/xdg_shell/wlr_xdg_popup.c
++++ b/types/xdg_shell/wlr_xdg_popup.c
 @@ -1,6 +1,7 @@
  #include <assert.h>
  #include <stdlib.h>
@@ -46,7 +56,7 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
  #include "types/wlr_xdg_shell.h"
  
  void handle_xdg_popup_ack_configure(
-@@ -52,6 +53,18 @@ static void xdg_popup_grab_end(struct wl
+@@ -52,6 +53,18 @@ static void xdg_popup_grab_end(struct wlr_xdg_popup_grab *popup_grab) {
  static void xdg_pointer_grab_enter(struct wlr_seat_pointer_grab *grab,
  		struct wlr_surface *surface, double sx, double sy) {
  	struct wlr_xdg_popup_grab *popup_grab = grab->data;
@@ -65,7 +75,7 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
  	if (wl_resource_get_client(surface->resource) == popup_grab->client) {
  		wlr_seat_pointer_enter(grab->seat, surface, sx, sy);
  	} else {
-@@ -65,13 +78,33 @@ static void xdg_pointer_grab_clear_focus
+@@ -65,13 +78,33 @@ static void xdg_pointer_grab_clear_focus(struct wlr_seat_pointer_grab *grab) {
  
  static void xdg_pointer_grab_motion(struct wlr_seat_pointer_grab *grab,
  		uint32_t time, double sx, double sy) {
@@ -101,7 +111,7 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
  	if (serial) {
  		return serial;
  	} else {
-@@ -84,11 +117,32 @@ static void xdg_pointer_grab_axis(struct
+@@ -84,11 +117,32 @@ static void xdg_pointer_grab_axis(struct wlr_seat_pointer_grab *grab,
  		uint32_t time, enum wl_pointer_axis orientation, double value,
  		int32_t value_discrete, enum wl_pointer_axis_source source,
  		enum wl_pointer_axis_relative_direction relative_direction) {
@@ -134,7 +144,7 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
  	wlr_seat_pointer_send_frame(grab->seat);
  }
  
-@@ -110,6 +164,11 @@ static void xdg_keyboard_grab_enter(stru
+@@ -110,6 +164,11 @@ static void xdg_keyboard_grab_enter(struct wlr_seat_keyboard_grab *grab,
  		struct wlr_surface *surface, const uint32_t keycodes[], size_t num_keycodes,
  		const struct wlr_keyboard_modifiers *modifiers) {
  	// keyboard focus should remain on the popup
@@ -146,3 +156,5 @@ Upstream: https://gitlab.freedesktop.org/wlroots/wlroots/-/merge_requests/4943
  }
  
  static void xdg_keyboard_grab_clear_focus(struct wlr_seat_keyboard_grab *grab) {
+-- 
+2.47.2

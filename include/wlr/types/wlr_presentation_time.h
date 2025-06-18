@@ -11,7 +11,6 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <time.h>
 #include <wayland-server-core.h>
 
 struct wlr_surface;
@@ -26,7 +25,9 @@ struct wlr_presentation {
 		struct wl_signal destroy;
 	} events;
 
-	struct wl_listener display_destroy;
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_presentation_feedback {
@@ -39,9 +40,11 @@ struct wlr_presentation_feedback {
 	uint32_t output_commit_seq;
 	bool zero_copy;
 
-	struct wl_listener output_commit;
-	struct wl_listener output_present;
-	struct wl_listener output_destroy;
+	struct {
+		struct wl_listener output_commit;
+		struct wl_listener output_present;
+		struct wl_listener output_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_presentation_event {
@@ -56,7 +59,7 @@ struct wlr_presentation_event {
 struct wlr_backend;
 
 struct wlr_presentation *wlr_presentation_create(struct wl_display *display,
-	struct wlr_backend *backend);
+	struct wlr_backend *backend, uint32_t version);
 /**
  * Mark the current surface's buffer as sampled.
  *

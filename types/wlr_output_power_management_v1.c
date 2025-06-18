@@ -77,11 +77,8 @@ static void output_power_handle_set_mode(struct wl_client *client,
 		return;
 	}
 
-	switch (mode) {
-	case ZWLR_OUTPUT_POWER_V1_MODE_OFF:
-	case ZWLR_OUTPUT_POWER_V1_MODE_ON:
-		break;
-	default:
+	uint32_t version = wl_resource_get_version(output_power_resource);
+	if (!zwlr_output_power_v1_mode_is_valid(mode, version)) {
 		wlr_log(WLR_ERROR, "Invalid power mode %d", mode);
 		wl_resource_post_error(output_power_resource,
 			ZWLR_OUTPUT_POWER_V1_ERROR_INVALID_MODE,
@@ -196,6 +193,10 @@ static void handle_display_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_output_power_manager_v1 *manager =
 		wl_container_of(listener, manager, display_destroy);
 	wl_signal_emit_mutable(&manager->events.destroy, manager);
+
+	assert(wl_list_empty(&manager->events.set_mode.listener_list));
+	assert(wl_list_empty(&manager->events.destroy.listener_list));
+
 	wl_global_destroy(manager->global);
 	free(manager);
 }
@@ -217,6 +218,7 @@ struct wlr_output_power_manager_v1 *wlr_output_power_manager_v1_create(
 
 	wl_signal_init(&manager->events.set_mode);
 	wl_signal_init(&manager->events.destroy);
+
 	wl_list_init(&manager->output_powers);
 
 	manager->display_destroy.notify = handle_display_destroy;

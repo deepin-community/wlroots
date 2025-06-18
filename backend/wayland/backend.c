@@ -21,6 +21,7 @@
 
 #include "drm-client-protocol.h"
 #include "linux-dmabuf-v1-client-protocol.h"
+#include "linux-drm-syncobj-v1-client-protocol.h"
 #include "pointer-gestures-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
@@ -411,6 +412,9 @@ static void registry_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(iface, wp_viewporter_interface.name) == 0) {
 		wl->viewporter = wl_registry_bind(registry, name,
 			&wp_viewporter_interface, 1);
+	} else if (strcmp(iface, wp_linux_drm_syncobj_manager_v1_interface.name) == 0) {
+		wl->drm_syncobj_manager_v1 = wl_registry_bind(registry, name,
+			&wp_linux_drm_syncobj_manager_v1_interface, 1);
 	}
 }
 
@@ -484,6 +488,11 @@ static void backend_destroy(struct wlr_backend *backend) {
 		destroy_wl_buffer(buffer);
 	}
 
+	struct wlr_wl_drm_syncobj_timeline *timeline, *tmp_timeline;
+	wl_list_for_each_safe(timeline, tmp_timeline, &wl->drm_syncobj_timelines, link) {
+		destroy_wl_drm_syncobj_timeline(timeline);
+	}
+
 	wlr_backend_finish(backend);
 
 	wl_list_remove(&wl->event_loop_destroy.link);
@@ -518,6 +527,9 @@ static void backend_destroy(struct wlr_backend *backend) {
 	if (wl->zwp_linux_dmabuf_v1) {
 		zwp_linux_dmabuf_v1_destroy(wl->zwp_linux_dmabuf_v1);
 	}
+	if (wl->drm_syncobj_manager_v1) {
+		wp_linux_drm_syncobj_manager_v1_destroy(wl->drm_syncobj_manager_v1);
+	}
 	if (wl->legacy_drm != NULL) {
 		wl_drm_destroy(wl->legacy_drm);
 	}
@@ -543,6 +555,7 @@ static void backend_destroy(struct wlr_backend *backend) {
 	wl_compositor_destroy(wl->compositor);
 	wl_registry_destroy(wl->registry);
 	wl_display_flush(wl->remote_display);
+	wl_event_queue_destroy(wl->busy_loop_queue);
 	if (wl->own_remote_display) {
 		wl_display_disconnect(wl->remote_display);
 	}
@@ -554,17 +567,10 @@ static int backend_get_drm_fd(struct wlr_backend *backend) {
 	return wl->drm_fd;
 }
 
-static uint32_t get_buffer_caps(struct wlr_backend *backend) {
-	struct wlr_wl_backend *wl = get_wl_backend_from_backend(backend);
-	return (wl->zwp_linux_dmabuf_v1 ? WLR_BUFFER_CAP_DMABUF : 0)
-		| (wl->shm ? WLR_BUFFER_CAP_SHM : 0);
-}
-
 static const struct wlr_backend_impl backend_impl = {
 	.start = backend_start,
 	.destroy = backend_destroy,
 	.get_drm_fd = backend_get_drm_fd,
-	.get_buffer_caps = get_buffer_caps,
 };
 
 bool wlr_backend_is_wl(struct wlr_backend *b) {
@@ -592,6 +598,7 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_event_loop *loop,
 	wl_list_init(&wl->outputs);
 	wl_list_init(&wl->seats);
 	wl_list_init(&wl->buffers);
+	wl_list_init(&wl->drm_syncobj_timelines);
 
 	if (remote_display != NULL) {
 		wl->remote_display = remote_display;
@@ -604,10 +611,16 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_event_loop *loop,
 		wl->own_remote_display = true;
 	}
 
+	wl->busy_loop_queue = wl_display_create_queue(wl->remote_display);
+	if (wl->busy_loop_queue == NULL) {
+		wlr_log_errno(WLR_ERROR, "Could not create a Wayland event queue");
+		goto error_display;
+	}
+
 	wl->registry = wl_display_get_registry(wl->remote_display);
 	if (!wl->registry) {
 		wlr_log_errno(WLR_ERROR, "Could not obtain reference to remote registry");
-		goto error_display;
+		goto error_queue;
 	}
 	wl_registry_add_listener(wl->registry, &registry_listener, wl);
 
@@ -623,6 +636,8 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_event_loop *loop,
 			"Remote Wayland compositor does not support xdg-shell");
 		goto error_registry;
 	}
+
+	wl->backend.features.timeline = wl->drm_syncobj_manager_v1 != NULL;
 
 	wl_display_roundtrip(wl->remote_display); // process initial event bursts
 
@@ -655,6 +670,13 @@ struct wlr_backend *wlr_wl_backend_create(struct wl_event_loop *loop,
 		}
 
 		zwp_linux_dmabuf_feedback_v1_destroy(linux_dmabuf_feedback_v1);
+	}
+
+	if (wl->zwp_linux_dmabuf_v1) {
+		wl->backend.buffer_caps |= WLR_BUFFER_CAP_DMABUF;
+	}
+	if (wl->shm) {
+		wl->backend.buffer_caps |= WLR_BUFFER_CAP_SHM;
 	}
 
 	int fd = wl_display_get_fd(wl->remote_display);
@@ -700,6 +722,8 @@ error_registry:
 		xdg_wm_base_destroy(wl->xdg_wm_base);
 	}
 	wl_registry_destroy(wl->registry);
+error_queue:
+	wl_event_queue_destroy(wl->busy_loop_queue);
 error_display:
 	if (wl->own_remote_display) {
 		wl_display_disconnect(wl->remote_display);

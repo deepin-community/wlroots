@@ -274,7 +274,7 @@ VkPhysicalDevice vulkan_find_drm_phdev(struct wlr_vk_instance *ini, int drm_fd) 
 	}
 
 	struct stat drm_stat = {0};
-	if (fstat(drm_fd, &drm_stat) != 0) {
+	if (drm_fd >= 0 && fstat(drm_fd, &drm_stat) != 0) {
 		wlr_log_errno(WLR_ERROR, "fstat failed");
 		return VK_NULL_HANDLE;
 	}
@@ -344,17 +344,23 @@ VkPhysicalDevice vulkan_find_drm_phdev(struct wlr_vk_instance *ini, int drm_fd) 
 			wlr_log(WLR_INFO, "  Driver name: %s (%s)", driver_props.driverName, driver_props.driverInfo);
 		}
 
-		if (!has_drm_props) {
-			wlr_log(WLR_DEBUG, "  Ignoring physical device \"%s\": "
-				"VK_EXT_physical_device_drm not supported",
-				phdev_props.deviceName);
-			continue;
+		bool found;
+		if (drm_fd >= 0) {
+			if (!has_drm_props) {
+				wlr_log(WLR_DEBUG, "  Ignoring physical device \"%s\": "
+					"VK_EXT_physical_device_drm not supported",
+					phdev_props.deviceName);
+				continue;
+			}
+
+			dev_t primary_devid = makedev(drm_props.primaryMajor, drm_props.primaryMinor);
+			dev_t render_devid = makedev(drm_props.renderMajor, drm_props.renderMinor);
+			found = primary_devid == drm_stat.st_rdev || render_devid == drm_stat.st_rdev;
+		} else {
+			found = phdev_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
 		}
 
-		dev_t primary_devid = makedev(drm_props.primaryMajor, drm_props.primaryMinor);
-		dev_t render_devid = makedev(drm_props.renderMajor, drm_props.renderMinor);
-		if (primary_devid == drm_stat.st_rdev ||
-				render_devid == drm_stat.st_rdev) {
+		if (found) {
 			wlr_log(WLR_INFO, "Found matching Vulkan physical device: %s",
 				phdev_props.deviceName);
 			return phdev;
@@ -382,7 +388,7 @@ int vulkan_open_phdev_drm_fd(VkPhysicalDevice phdev) {
 	} else if (drm_props.hasPrimary) {
 		devid = makedev(drm_props.primaryMajor, drm_props.primaryMinor);
 	} else {
-		wlr_log(WLR_ERROR, "Physical device is missing both render and primary nodes");
+		wlr_log(WLR_INFO, "Physical device is missing both render and primary nodes");
 		return -1;
 	}
 
@@ -462,7 +468,6 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 	const char *extensions[32] = {0};
 	size_t extensions_len = 0;
 	extensions[extensions_len++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
-	extensions[extensions_len++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
 	extensions[extensions_len++] = VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME; // or vulkan 1.2
 	extensions[extensions_len++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
 	extensions[extensions_len++] = VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME;
@@ -497,19 +502,25 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 		assert(graphics_found);
 	}
 
-	const VkPhysicalDeviceExternalSemaphoreInfo ext_semaphore_info = {
-		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
-		.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-	};
-	VkExternalSemaphoreProperties ext_semaphore_props = {
-		.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
-	};
-	vkGetPhysicalDeviceExternalSemaphoreProperties(phdev,
-		&ext_semaphore_info, &ext_semaphore_props);
-	bool exportable_semaphore = ext_semaphore_props.externalSemaphoreFeatures &
-		VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT;
-	bool importable_semaphore = ext_semaphore_props.externalSemaphoreFeatures &
-		VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+	bool exportable_semaphore = false, importable_semaphore = false;
+	bool has_external_semaphore_fd =
+		check_extension(avail_ext_props, avail_extc, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+	if (has_external_semaphore_fd) {
+		const VkPhysicalDeviceExternalSemaphoreInfo ext_semaphore_info = {
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+			.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+		};
+		VkExternalSemaphoreProperties ext_semaphore_props = {
+			.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
+		};
+		vkGetPhysicalDeviceExternalSemaphoreProperties(phdev,
+			&ext_semaphore_info, &ext_semaphore_props);
+		exportable_semaphore = ext_semaphore_props.externalSemaphoreFeatures &
+			VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT;
+		importable_semaphore = ext_semaphore_props.externalSemaphoreFeatures &
+			VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT;
+		extensions[extensions_len++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+	}
 	if (!exportable_semaphore) {
 		wlr_log(WLR_DEBUG, "VkSemaphore is not exportable to a sync_file");
 	}
@@ -522,6 +533,7 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 		wlr_log(WLR_DEBUG, "DMA-BUF sync_file import/export not supported");
 	}
 
+	dev->sync_file_import_export = exportable_semaphore && importable_semaphore;
 	dev->implicit_sync_interop =
 		exportable_semaphore && importable_semaphore && dmabuf_sync_file_import_export;
 	if (dev->implicit_sync_interop) {
@@ -592,7 +604,7 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 		.ppEnabledExtensionNames = extensions,
 	};
 
-	assert(extensions_len < sizeof(extensions) / sizeof(extensions[0]));
+	assert(extensions_len <= sizeof(extensions) / sizeof(extensions[0]));
 
 	res = vkCreateDevice(phdev, &dev_info, NULL, &dev->dev);
 
@@ -617,9 +629,12 @@ struct wlr_vk_device *vulkan_device_create(struct wlr_vk_instance *ini,
 	load_device_proc(dev, "vkWaitSemaphoresKHR", &dev->api.vkWaitSemaphoresKHR);
 	load_device_proc(dev, "vkGetSemaphoreCounterValueKHR",
 		&dev->api.vkGetSemaphoreCounterValueKHR);
-	load_device_proc(dev, "vkGetSemaphoreFdKHR", &dev->api.vkGetSemaphoreFdKHR);
-	load_device_proc(dev, "vkImportSemaphoreFdKHR", &dev->api.vkImportSemaphoreFdKHR);
 	load_device_proc(dev, "vkQueueSubmit2KHR", &dev->api.vkQueueSubmit2KHR);
+
+	if (has_external_semaphore_fd) {
+		load_device_proc(dev, "vkGetSemaphoreFdKHR", &dev->api.vkGetSemaphoreFdKHR);
+		load_device_proc(dev, "vkImportSemaphoreFdKHR", &dev->api.vkImportSemaphoreFdKHR);
+	}
 
 	size_t max_fmts;
 	const struct wlr_vk_format *fmts = vulkan_get_format_list(&max_fmts);

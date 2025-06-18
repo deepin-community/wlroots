@@ -79,9 +79,20 @@ static bool output_commit(struct wlr_output *wlr_output,
 	return true;
 }
 
+static bool output_set_cursor(struct wlr_output *wlr_output,
+		struct wlr_buffer *buffer, int hotspot_x, int hotspot_y) {
+	return true;
+}
+
+static bool output_move_cursor(struct wlr_output *wlr_output, int x, int y) {
+	return true;
+}
+
 static void output_destroy(struct wlr_output *wlr_output) {
-	struct wlr_headless_output *output =
-		headless_output_from_output(wlr_output);
+	struct wlr_headless_output *output = headless_output_from_output(wlr_output);
+
+	wlr_output_finish(wlr_output);
+
 	wl_list_remove(&output->link);
 	wl_event_source_remove(output->frame_timer);
 	free(output);
@@ -91,6 +102,8 @@ static const struct wlr_output_impl output_impl = {
 	.destroy = output_destroy,
 	.test = output_test,
 	.commit = output_commit,
+	.set_cursor = output_set_cursor,
+	.move_cursor = output_move_cursor,
 };
 
 bool wlr_output_is_headless(struct wlr_output *wlr_output) {

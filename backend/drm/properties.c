@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <inttypes.h>
 #include <wlr/util/log.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -40,6 +41,7 @@ static const struct prop_info crtc_info[] = {
 	{ "GAMMA_LUT", INDEX(gamma_lut) },
 	{ "GAMMA_LUT_SIZE", INDEX(gamma_lut_size) },
 	{ "MODE_ID", INDEX(mode_id) },
+	{ "OUT_FENCE_PTR", INDEX(out_fence_ptr) },
 	{ "VRR_ENABLED", INDEX(vrr_enabled) },
 #undef INDEX
 };
@@ -55,6 +57,7 @@ static const struct prop_info plane_info[] = {
 	{ "FB_ID", INDEX(fb_id) },
 	{ "HOTSPOT_X", INDEX(hotspot_x) },
 	{ "HOTSPOT_Y", INDEX(hotspot_y) },
+	{ "IN_FENCE_FD", INDEX(in_fence_fd) },
 	{ "IN_FORMATS", INDEX(in_formats) },
 	{ "SIZE_HINTS", INDEX(size_hints) },
 	{ "SRC_H", INDEX(src_h) },
@@ -77,14 +80,14 @@ static bool scan_properties(int fd, uint32_t id, uint32_t type, uint32_t *result
 		const struct prop_info *info, size_t info_len) {
 	drmModeObjectProperties *props = drmModeObjectGetProperties(fd, id, type);
 	if (!props) {
-		wlr_log_errno(WLR_ERROR, "Failed to get DRM object properties");
+		wlr_log_errno(WLR_ERROR, "Failed to get DRM object %" PRIu32 " properties", id);
 		return false;
 	}
 
 	for (uint32_t i = 0; i < props->count_props; ++i) {
 		drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[i]);
 		if (!prop) {
-			wlr_log_errno(WLR_ERROR, "Failed to get DRM object property");
+			wlr_log_errno(WLR_ERROR, "Failed to get property %" PRIu32 " of DRM object %" PRIu32, props->props[i], id);
 			continue;
 		}
 

@@ -6,7 +6,6 @@
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
-#include "backend/backend.h"
 #include "backend/multi.h"
 
 struct subbackend_state {
@@ -52,6 +51,9 @@ static void multi_backend_destroy(struct wlr_backend *wlr_backend) {
 
 	wlr_backend_finish(wlr_backend);
 
+	assert(wl_list_empty(&backend->events.backend_add.listener_list));
+	assert(wl_list_empty(&backend->events.backend_remove.listener_list));
+
 	// Some backends may depend on other backends, ie. destroying a backend may
 	// also destroy other backends
 	while (!wl_list_empty(&backend->backends)) {
@@ -74,28 +76,6 @@ static int multi_backend_get_drm_fd(struct wlr_backend *backend) {
 	}
 
 	return -1;
-}
-
-static uint32_t multi_backend_get_buffer_caps(struct wlr_backend *backend) {
-	struct wlr_multi_backend *multi = multi_backend_from_backend(backend);
-
-	if (wl_list_empty(&multi->backends)) {
-		return 0;
-	}
-
-	uint32_t caps = WLR_BUFFER_CAP_DATA_PTR | WLR_BUFFER_CAP_DMABUF
-			| WLR_BUFFER_CAP_SHM;
-
-	struct subbackend_state *sub;
-	wl_list_for_each(sub, &multi->backends, link) {
-		uint32_t backend_caps = backend_get_buffer_caps(sub->backend);
-		if (backend_caps != 0) {
-			// only count backend capable of presenting a buffer
-			caps = caps & backend_caps;
-		}
-	}
-
-	return caps;
 }
 
 static int compare_output_state_backend(const void *data_a, const void *data_b) {
@@ -126,22 +106,24 @@ static bool commit(struct wlr_backend *backend,
 	qsort(by_backend, states_len, sizeof(by_backend[0]), compare_output_state_backend);
 
 	bool ok = true;
-	for (size_t i = 0; i < states_len; i++) {
+	for (size_t i = 0; i < states_len;) {
 		struct wlr_backend *sub = by_backend[i].output->backend;
 
-		size_t j = i;
-		while (j < states_len && by_backend[j].output->backend == sub) {
-			j++;
+		size_t len = 1;
+		while (i + len < states_len &&
+				by_backend[i + len].output->backend == sub) {
+			len++;
 		}
 
 		if (test_only) {
-			ok = wlr_backend_test(sub, &by_backend[i], j - i);
+			ok = wlr_backend_test(sub, &by_backend[i], len);
 		} else {
-			ok = wlr_backend_commit(sub, &by_backend[i], j - i);
+			ok = wlr_backend_commit(sub, &by_backend[i], len);
 		}
 		if (!ok) {
 			break;
 		}
+		i += len;
 	}
 
 	free(by_backend);
@@ -162,7 +144,6 @@ static const struct wlr_backend_impl backend_impl = {
 	.start = multi_backend_start,
 	.destroy = multi_backend_destroy,
 	.get_drm_fd = multi_backend_get_drm_fd,
-	.get_buffer_caps = multi_backend_get_buffer_caps,
 	.test = multi_backend_test,
 	.commit = multi_backend_commit,
 };
@@ -225,6 +206,33 @@ static struct subbackend_state *multi_backend_get_subbackend(struct wlr_multi_ba
 	return NULL;
 }
 
+static void multi_backend_refresh_features(struct wlr_multi_backend *multi) {
+	multi->backend.buffer_caps = 0;
+	multi->backend.features.timeline = true;
+
+	bool has_buffer_cap = false;
+	uint32_t buffer_caps_intersection =
+		WLR_BUFFER_CAP_DATA_PTR | WLR_BUFFER_CAP_DMABUF | WLR_BUFFER_CAP_SHM;
+	struct subbackend_state *sub = NULL;
+	wl_list_for_each(sub, &multi->backends, link) {
+		// Only take into account backends capable of presenting a buffer
+		if (sub->backend->buffer_caps != 0) {
+			has_buffer_cap = true;
+			buffer_caps_intersection &= sub->backend->buffer_caps;
+		}
+
+		// timeline is only applicable to backends that support DMABUFs
+		if (sub->backend->buffer_caps & WLR_BUFFER_CAP_DMABUF) {
+			multi->backend.features.timeline = multi->backend.features.timeline &&
+				sub->backend->features.timeline;
+		}
+	}
+
+	if (has_buffer_cap) {
+		multi->backend.buffer_caps = buffer_caps_intersection;
+	}
+}
+
 bool wlr_multi_backend_add(struct wlr_backend *_multi,
 		struct wlr_backend *backend) {
 	assert(_multi && backend);
@@ -256,6 +264,7 @@ bool wlr_multi_backend_add(struct wlr_backend *_multi,
 	wl_signal_add(&backend->events.new_output, &sub->new_output);
 	sub->new_output.notify = new_output_reemit;
 
+	multi_backend_refresh_features(multi);
 	wl_signal_emit_mutable(&multi->events.backend_add, backend);
 	return true;
 }
@@ -270,6 +279,7 @@ void wlr_multi_backend_remove(struct wlr_backend *_multi,
 	if (sub) {
 		wl_signal_emit_mutable(&multi->events.backend_remove, backend);
 		subbackend_state_destroy(sub);
+		multi_backend_refresh_features(multi);
 	}
 }
 

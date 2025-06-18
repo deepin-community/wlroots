@@ -123,6 +123,9 @@ static void drag_icon_destroy(struct wlr_drag_icon *icon) {
 	icon->drag->icon = NULL;
 	wl_list_remove(&icon->surface_destroy.link);
 	wl_signal_emit_mutable(&icon->events.destroy, icon);
+
+	assert(wl_list_empty(&icon->events.destroy.listener_list));
+
 	free(icon);
 }
 
@@ -159,6 +162,11 @@ static void drag_destroy(struct wlr_drag *drag) {
 	// signal. This allows e.g. wl_pointer.enter to be sent in the destroy
 	// signal handler.
 	wl_signal_emit_mutable(&drag->events.destroy, drag);
+
+	assert(wl_list_empty(&drag->events.focus.listener_list));
+	assert(wl_list_empty(&drag->events.motion.listener_list));
+	assert(wl_list_empty(&drag->events.drop.listener_list));
+	assert(wl_list_empty(&drag->events.destroy.listener_list));
 
 	if (drag->source) {
 		wl_list_remove(&drag->source_destroy.link);
@@ -362,6 +370,7 @@ static const struct wlr_keyboard_grab_interface
 static void drag_handle_icon_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_drag *drag = wl_container_of(listener, drag, icon_destroy);
 	drag->icon = NULL;
+	wl_list_remove(&drag->icon_destroy.link);
 }
 
 static void drag_handle_drag_source_destroy(struct wl_listener *listener,

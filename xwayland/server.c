@@ -98,7 +98,7 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
 
 	argv[i++] = NULL;
 
-	assert(i < sizeof(argv) / sizeof(argv[0]));
+	assert(i <= sizeof(argv) / sizeof(argv[0]));
 
 	char wayland_socket_str[16];
 	snprintf(wayland_socket_str, sizeof(wayland_socket_str), "%d", server->wl_fd[1]);
@@ -256,6 +256,17 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
 	while (waitpid(server->pid, NULL, 0) < 0) {
 		if (errno == EINTR) {
 			continue;
+		}
+
+		/* If some application has installed a SIGCHLD handler, they
+		 * may race and waitpid() on our child, which will cause this
+		 * waitpid() to fail. We have a signal from the
+		 * notify pipe that things are ready, so this waitpid() is only
+		 * to prevent zombies, which will have already been reaped by
+		 * the application's SIGCHLD handler.
+		 */
+		if (errno == ECHILD) {
+			break;
 		}
 		wlr_log_errno(WLR_ERROR, "waitpid for Xwayland fork failed");
 		goto error;
@@ -444,7 +455,13 @@ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server) {
 	}
 	server_finish_process(server);
 	server_finish_display(server);
+
 	wl_signal_emit_mutable(&server->events.destroy, NULL);
+
+	assert(wl_list_empty(&server->events.start.listener_list));
+	assert(wl_list_empty(&server->events.ready.listener_list));
+	assert(wl_list_empty(&server->events.destroy.listener_list));
+
 	free(server);
 }
 

@@ -14,9 +14,10 @@
 #include <stdint.h>
 #include <time.h>
 #include <wayland-server-core.h>
-#include <wlr/types/wlr_output.h>
 #include <wlr/util/addon.h>
 #include <wlr/util/box.h>
+
+struct wlr_surface;
 
 enum wlr_surface_state_field {
 	WLR_SURFACE_STATE_BUFFER = 1 << 0,
@@ -98,6 +99,13 @@ struct wlr_surface_role {
 	 */
 	void (*commit)(struct wlr_surface *surface);
 	/**
+	 * Called when the surface is mapped. May be NULL.
+	 *
+	 * If the role is represented by an object, this is only called if
+	 * such object exists.
+	 */
+	void (*map)(struct wlr_surface *surface);
+	/**
 	 * Called when the surface is unmapped. May be NULL.
 	 *
 	 * If the role is represented by an object, this is only called if
@@ -115,8 +123,11 @@ struct wlr_surface_output {
 	struct wlr_output *output;
 
 	struct wl_list link; // wlr_surface.current_outputs
-	struct wl_listener bind;
-	struct wl_listener destroy;
+
+	struct {
+		struct wl_listener bind;
+		struct wl_listener destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_surface {
@@ -180,28 +191,47 @@ struct wlr_surface {
 	struct wl_resource *role_resource;
 
 	struct {
+		/**
+		 * Signals that the client has sent a wl_surface.commit request.
+		 *
+		 * The state to be committed can be accessed in wlr_surface.pending.
+		 *
+		 * The commit may not be applied immediately, in which case it's marked
+		 * as "cached" and put into a queue. See wlr_surface_lock_pending().
+		 */
 		struct wl_signal client_commit;
+		/**
+		 * Signals that a commit has been applied.
+		 *
+		 * The new state can be accessed in wlr_surface.current.
+		 */
 		struct wl_signal commit;
 
 		/**
-		 * The `map` event signals that the surface has a non-null buffer
-		 * committed and is ready to be displayed.
+		 * Signals that the surface has a non-null buffer committed and is
+		 * ready to be displayed.
 		 */
 		struct wl_signal map;
 		/**
-		 * The `unmap` event signals that the surface shouldn't be displayed
-		 * anymore. This can happen when a null buffer is committed,
-		 * the associated role object is destroyed, or when the role-specific
-		 * conditions for the surface to be mapped no longer apply.
+		 * Signals that the surface shouldn't be displayed anymore. This can
+		 * happen when a null buffer is committed, the associated role object
+		 * is destroyed, or when the role-specific conditions for the surface
+		 * to be mapped no longer apply.
 		 */
 		struct wl_signal unmap;
 
 		/**
+		 * Signals that a new child sub-surface has been added.
+		 *
 		 * Note: unlike other new_* signals, new_subsurface is emitted when
 		 * the subsurface is added to the parent surface's current state,
 		 * not when the object is created.
 		 */
 		struct wl_signal new_subsurface; // struct wlr_subsurface
+
+		/**
+		 * Signals that the surface is being destroyed.
+		 */
 		struct wl_signal destroy;
 	} events;
 
@@ -210,33 +240,33 @@ struct wlr_surface {
 	struct wlr_addon_set addons;
 	void *data;
 
-	// private state
-
-	struct wl_listener role_resource_destroy;
-
 	struct {
-		int32_t scale;
-		enum wl_output_transform transform;
-		int width, height;
-		int buffer_width, buffer_height;
-	} previous;
+		struct wl_listener role_resource_destroy;
 
-	bool unmap_commit;
+		struct {
+			int32_t scale;
+			enum wl_output_transform transform;
+			int width, height;
+			int buffer_width, buffer_height;
+		} previous;
 
-	bool opaque;
+		bool unmap_commit;
 
-	bool handling_commit;
-	bool pending_rejected;
+		bool opaque;
 
-	int32_t preferred_buffer_scale;
-	bool preferred_buffer_transform_sent;
-	enum wl_output_transform preferred_buffer_transform;
+		bool handling_commit;
+		bool pending_rejected;
 
-	struct wl_list synced; // wlr_surface_synced.link
-	size_t synced_len;
+		int32_t preferred_buffer_scale;
+		bool preferred_buffer_transform_sent;
+		enum wl_output_transform preferred_buffer_transform;
 
-	struct wl_resource *pending_buffer_resource;
-	struct wl_listener pending_buffer_resource_destroy;
+		struct wl_list synced; // wlr_surface_synced.link
+		size_t synced_len;
+
+		struct wl_resource *pending_buffer_resource;
+		struct wl_listener pending_buffer_resource_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_renderer;
@@ -245,13 +275,15 @@ struct wlr_compositor {
 	struct wl_global *global;
 	struct wlr_renderer *renderer; // may be NULL
 
-	struct wl_listener display_destroy;
-	struct wl_listener renderer_destroy;
-
 	struct {
 		struct wl_signal new_surface;
 		struct wl_signal destroy;
 	} events;
+
+	struct {
+		struct wl_listener display_destroy;
+		struct wl_listener renderer_destroy;
+	} WLR_PRIVATE;
 };
 
 typedef void (*wlr_surface_iterator_func_t)(struct wlr_surface *surface,
@@ -381,7 +413,7 @@ void wlr_surface_send_frame_done(struct wlr_surface *surface,
  * surface coordinates.
  * X and y may be negative, if there are subsurfaces with negative position.
  */
-void wlr_surface_get_extends(struct wlr_surface *surface, struct wlr_box *box);
+void wlr_surface_get_extents(struct wlr_surface *surface, struct wlr_box *box);
 
 /**
  * Get the struct wlr_surface corresponding to a wl_surface resource.
@@ -453,6 +485,8 @@ void wlr_surface_set_preferred_buffer_scale(struct wlr_surface *surface,
 void wlr_surface_set_preferred_buffer_transform(struct wlr_surface *surface,
 	enum wl_output_transform transform);
 
+struct wlr_surface_synced;
+
 /**
  * Implementation for struct wlr_surface_synced.
  *
@@ -469,6 +503,11 @@ struct wlr_surface_synced_impl {
 	void (*finish_state)(void *state);
 	// Move a state. If NULL, memcpy() is used.
 	void (*move_state)(void *dst, void *src);
+
+	// Called when the state is committed. If NULL, this is a no-op.
+	// If an object is a surface role object which has state synchronized with
+	// the surface state, the role commit hook should be preferred over this.
+	void (*commit)(struct wlr_surface_synced *synced);
 };
 
 /**

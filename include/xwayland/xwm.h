@@ -39,6 +39,7 @@ enum atom_name {
 	WM_TAKE_FOCUS,
 	WINDOW,
 	NET_ACTIVE_WINDOW,
+	NET_CLOSE_WINDOW,
 	NET_WM_MOVERESIZE,
 	NET_SUPPORTING_WM_CHECK,
 	NET_WM_STATE_FOCUSED,
@@ -47,6 +48,13 @@ enum atom_name {
 	NET_WM_STATE_MAXIMIZED_VERT,
 	NET_WM_STATE_MAXIMIZED_HORZ,
 	NET_WM_STATE_HIDDEN,
+	NET_WM_STATE_STICKY,
+	NET_WM_STATE_SHADED,
+	NET_WM_STATE_SKIP_TASKBAR,
+	NET_WM_STATE_SKIP_PAGER,
+	NET_WM_STATE_ABOVE,
+	NET_WM_STATE_BELOW,
+	NET_WM_STATE_DEMANDS_ATTENTION,
 	NET_WM_PING,
 	WM_CHANGE_STATE,
 	WM_STATE,
@@ -62,6 +70,7 @@ enum atom_name {
 	NET_STARTUP_ID,
 	NET_STARTUP_INFO,
 	NET_STARTUP_INFO_BEGIN,
+	NET_WM_WINDOW_OPACITY,
 	NET_WM_WINDOW_TYPE_NORMAL,
 	NET_WM_WINDOW_TYPE_UTILITY,
 	NET_WM_WINDOW_TYPE_TOOLTIP,
@@ -73,6 +82,9 @@ enum atom_name {
 	NET_WM_WINDOW_TYPE_NOTIFICATION,
 	NET_WM_WINDOW_TYPE_SPLASH,
 	NET_WM_WINDOW_TYPE_DESKTOP,
+	NET_WM_WINDOW_TYPE_DOCK,
+	NET_WM_WINDOW_TYPE_TOOLBAR,
+	NET_WM_WINDOW_TYPE_DIALOG,
 	DND_SELECTION,
 	DND_AWARE,
 	DND_STATUS,
@@ -113,6 +125,7 @@ struct wlr_xwm {
 	struct wlr_xwm_selection dnd_selection;
 
 	struct wlr_xwayland_surface *focus_surface;
+	struct wlr_xwayland_surface *offered_focus;
 
 	// Surfaces in creation order
 	struct wl_list surfaces; // wlr_xwayland_surface.link
@@ -170,5 +183,7 @@ bool xwm_atoms_contains(struct wlr_xwm *xwm, xcb_atom_t *atoms,
 xcb_void_cookie_t xwm_send_event_with_size(xcb_connection_t *c,
 	uint8_t propagate, xcb_window_t destination,
 	uint32_t event_mask, const void *event, uint32_t length);
+
+void xwm_schedule_flush(struct wlr_xwm *xwm);
 
 #endif

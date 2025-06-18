@@ -45,11 +45,17 @@ struct wlr_renderer {
 		 * Does the renderer support color transforms on its output?
 		 */
 		bool output_color_transform;
+		/**
+		 * Whether wait/signal timelines are supported.
+		 *
+		 * See struct wlr_drm_syncobj_timeline.
+		 */
+		bool timeline;
 	} features;
 
-	// private state
-
-	const struct wlr_renderer_impl *impl;
+	struct {
+		const struct wlr_renderer_impl *impl;
+	} WLR_PRIVATE;
 };
 
 /**

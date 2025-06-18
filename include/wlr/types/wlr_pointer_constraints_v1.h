@@ -55,8 +55,7 @@ struct wlr_pointer_constraint_v1 {
 
 	struct {
 		/**
-		 * Called when a pointer constraint's region is updated,
-		 * post-surface-commit.
+		 * Emitted when a pointer constraint's region is updated.
 		 */
 		struct wl_signal set_region;
 		struct wl_signal destroy;
@@ -64,13 +63,14 @@ struct wlr_pointer_constraint_v1 {
 
 	void *data;
 
-	// private state
+	struct {
+		struct wl_listener surface_destroy;
+		struct wl_listener seat_destroy;
 
-	struct wl_listener surface_commit;
-	struct wl_listener surface_destroy;
-	struct wl_listener seat_destroy;
+		struct wlr_surface_synced synced;
 
-	struct wlr_surface_synced synced;
+		bool destroying;
+	} WLR_PRIVATE;
 };
 
 struct wlr_pointer_constraints_v1 {
@@ -78,17 +78,15 @@ struct wlr_pointer_constraints_v1 {
 	struct wl_list constraints; // wlr_pointer_constraint_v1.link
 
 	struct {
-		/**
-		 * Called when a new pointer constraint is created.
-		 *
-		 * The data pointer is a struct wlr_pointer_constraint_v1.
-		 */
-		struct wl_signal new_constraint;
+		struct wl_signal destroy;
+		struct wl_signal new_constraint; // struct wlr_pointer_constraint_v1
 	} events;
 
-	struct wl_listener display_destroy;
-
 	void *data;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_pointer_constraints_v1 *wlr_pointer_constraints_v1_create(

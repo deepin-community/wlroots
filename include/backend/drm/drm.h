@@ -15,6 +15,11 @@
 #include "backend/drm/properties.h"
 #include "backend/drm/renderer.h"
 
+struct wlr_drm_viewport {
+	struct wlr_fbox src_box;
+	struct wlr_box dst_box;
+};
+
 struct wlr_drm_plane {
 	uint32_t type;
 	uint32_t id;
@@ -26,6 +31,8 @@ struct wlr_drm_plane {
 	struct wlr_drm_fb *queued_fb;
 	/* Buffer currently displayed on screen */
 	struct wlr_drm_fb *current_fb;
+	/* Viewport belonging to the last committed fb */
+	struct wlr_drm_viewport viewport;
 
 	struct wlr_drm_format_set formats;
 
@@ -139,12 +146,17 @@ struct wlr_drm_connector_state {
 	bool active;
 	drmModeModeInfo mode;
 	struct wlr_drm_fb *primary_fb;
+	struct wlr_drm_viewport primary_viewport;
 	struct wlr_drm_fb *cursor_fb;
+
+	struct wlr_drm_syncobj_timeline *wait_timeline;
+	uint64_t wait_point;
 
 	// used by atomic
 	uint32_t mode_id;
 	uint32_t gamma_lut;
 	uint32_t fb_damage_clips;
+	int primary_in_fence_fd, out_fence_fd;
 	bool vrr_enabled;
 };
 
@@ -213,7 +225,6 @@ void scan_drm_connectors(struct wlr_drm_backend *state,
 void scan_drm_leases(struct wlr_drm_backend *drm);
 bool commit_drm_device(struct wlr_drm_backend *drm,
 	const struct wlr_backend_output_state *states, size_t states_len, bool test_only);
-void restore_drm_device(struct wlr_drm_backend *drm);
 int handle_drm_event(int fd, uint32_t mask, void *data);
 void destroy_drm_connector(struct wlr_drm_connector *conn);
 bool drm_connector_is_cursor_visible(struct wlr_drm_connector *conn);

@@ -13,6 +13,7 @@
 #include <wlr/types/wlr_drm.h>
 #include <wlr/util/box.h>
 #include <wlr/util/log.h>
+#include <wlr/render/drm_syncobj.h>
 #include <wlr/render/vulkan.h>
 #include <wlr/backend/interface.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
@@ -26,7 +27,7 @@
 #include "render/vulkan/shaders/quad.frag.h"
 #include "render/vulkan/shaders/output.frag.h"
 #include "types/wlr_buffer.h"
-#include "types/wlr_matrix.h"
+#include "util/time.h"
 
 // TODO:
 // - simplify stage allocation, don't track allocations but use ringbuffer-like
@@ -323,7 +324,6 @@ struct wlr_vk_buffer_span vulkan_get_stage_span(struct wlr_vk_renderer *r,
 		goto error;
 	}
 
-	wlr_log(WLR_DEBUG, "Created new vk staging buffer of size %" PRIu64, bsize);
 	buf->buf_size = bsize;
 	wl_list_insert(&r->stage.buffers, &buf->link);
 
@@ -457,7 +457,7 @@ bool vulkan_wait_command_buffer(struct wlr_vk_command_buffer *cb,
 }
 
 static void release_command_buffer_resources(struct wlr_vk_command_buffer *cb,
-		struct wlr_vk_renderer *renderer) {
+		struct wlr_vk_renderer *renderer, int64_t now) {
 	struct wlr_vk_texture *texture, *texture_tmp;
 	wl_list_for_each_safe(texture, texture_tmp, &cb->destroy_textures, destroy_link) {
 		wl_list_remove(&texture->destroy_link);
@@ -468,6 +468,7 @@ static void release_command_buffer_resources(struct wlr_vk_command_buffer *cb,
 	struct wlr_vk_shared_buffer *buf, *buf_tmp;
 	wl_list_for_each_safe(buf, buf_tmp, &cb->stage_buffers, link) {
 		buf->allocs.size = 0;
+		buf->last_used_ms = now;
 
 		wl_list_remove(&buf->link);
 		wl_list_insert(&renderer->stage.buffers, &buf->link);
@@ -491,12 +492,22 @@ static struct wlr_vk_command_buffer *get_command_buffer(
 		return NULL;
 	}
 
+
+	// Garbage collect any buffers that have remained unused for too long
+	int64_t now = get_current_time_msec();
+	struct wlr_vk_shared_buffer *buf, *buf_tmp;
+	wl_list_for_each_safe(buf, buf_tmp, &renderer->stage.buffers, link) {
+		if (buf->allocs.size == 0 && buf->last_used_ms + 10000 < now) {
+			shared_buffer_destroy(renderer, buf);
+		}
+	}
+
 	// Destroy textures for completed command buffers
 	for (size_t i = 0; i < VULKAN_COMMAND_BUFFERS_CAP; i++) {
 		struct wlr_vk_command_buffer *cb = &renderer->command_buffers[i];
 		if (cb->vk != VK_NULL_HANDLE && !cb->recording &&
 				cb->timeline_point <= current_point) {
-			release_command_buffer_resources(cb, renderer);
+			release_command_buffer_resources(cb, renderer, now);
 		}
 	}
 
@@ -923,9 +934,9 @@ static struct wlr_vk_render_buffer *get_render_buffer(
 	return buffer;
 }
 
-bool vulkan_sync_foreign_texture(struct wlr_vk_texture *texture) {
+bool vulkan_sync_foreign_texture(struct wlr_vk_texture *texture,
+		int sync_file_fds[static WLR_DMABUF_MAX_PLANES]) {
 	struct wlr_vk_renderer *renderer = texture->renderer;
-	VkResult res;
 
 	struct wlr_dmabuf_attributes dmabuf = {0};
 	if (!wlr_buffer_get_dmabuf(texture->buffer, &dmabuf)) {
@@ -962,51 +973,23 @@ bool vulkan_sync_foreign_texture(struct wlr_vk_texture *texture) {
 			return false;
 		}
 
-		if (texture->foreign_semaphores[i] == VK_NULL_HANDLE) {
-			VkSemaphoreCreateInfo semaphore_info = {
-				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-			};
-			res = vkCreateSemaphore(renderer->dev->dev, &semaphore_info, NULL,
-				&texture->foreign_semaphores[i]);
-			if (res != VK_SUCCESS) {
-				close(sync_file_fd);
-				wlr_vk_error("vkCreateSemaphore", res);
-				return false;
-			}
-		}
-
-		VkImportSemaphoreFdInfoKHR import_info = {
-			.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
-			.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-			.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
-			.semaphore = texture->foreign_semaphores[i],
-			.fd = sync_file_fd,
-		};
-		res = renderer->dev->api.vkImportSemaphoreFdKHR(renderer->dev->dev, &import_info);
-		if (res != VK_SUCCESS) {
-			close(sync_file_fd);
-			wlr_vk_error("vkImportSemaphoreFdKHR", res);
-			return false;
-		}
+		sync_file_fds[i] = sync_file_fd;
 	}
 
 	return true;
 }
 
 bool vulkan_sync_render_buffer(struct wlr_vk_renderer *renderer,
-		struct wlr_vk_render_buffer *render_buffer, struct wlr_vk_command_buffer *cb) {
+		struct wlr_vk_render_buffer *render_buffer, struct wlr_vk_command_buffer *cb,
+		struct wlr_drm_syncobj_timeline *signal_timeline, uint64_t signal_point) {
 	VkResult res;
 
-	if (!renderer->dev->implicit_sync_interop) {
+	if (!renderer->dev->implicit_sync_interop && signal_timeline == NULL) {
 		// We have no choice but to block here sadly
 		return vulkan_wait_command_buffer(cb, renderer);
 	}
 
-	struct wlr_dmabuf_attributes dmabuf = {0};
-	if (!wlr_buffer_get_dmabuf(render_buffer->wlr_buffer, &dmabuf)) {
-		wlr_log(WLR_ERROR, "wlr_buffer_get_dmabuf failed");
-		return false;
-	}
+	assert(cb->binary_semaphore != VK_NULL_HANDLE);
 
 	// Note: vkGetSemaphoreFdKHR implicitly resets the semaphore
 	const VkSemaphoreGetFdInfoKHR get_fence_fd_info = {
@@ -1022,17 +1005,32 @@ bool vulkan_sync_render_buffer(struct wlr_vk_renderer *renderer,
 		return false;
 	}
 
-	for (int i = 0; i < dmabuf.n_planes; i++) {
-		if (!dmabuf_import_sync_file(dmabuf.fd[i], DMA_BUF_SYNC_WRITE,
-				sync_file_fd)) {
-			close(sync_file_fd);
-			return false;
+	bool ok = false;
+	if (signal_timeline != NULL) {
+		if (!wlr_drm_syncobj_timeline_import_sync_file(signal_timeline,
+				signal_point, sync_file_fd)) {
+			goto out;
+		}
+	} else {
+		struct wlr_dmabuf_attributes dmabuf = {0};
+		if (!wlr_buffer_get_dmabuf(render_buffer->wlr_buffer, &dmabuf)) {
+			wlr_log(WLR_ERROR, "wlr_buffer_get_dmabuf failed");
+			goto out;
+		}
+
+		for (int i = 0; i < dmabuf.n_planes; i++) {
+			if (!dmabuf_import_sync_file(dmabuf.fd[i], DMA_BUF_SYNC_WRITE,
+					sync_file_fd)) {
+				goto out;
+			}
 		}
 	}
 
-	close(sync_file_fd);
+	ok = true;
 
-	return true;
+out:
+	close(sync_file_fd);
+	return ok;
 }
 
 static const struct wlr_drm_format_set *vulkan_get_texture_formats(
@@ -1071,10 +1069,15 @@ static void vulkan_destroy(struct wlr_renderer *wlr_renderer) {
 		if (cb->vk == VK_NULL_HANDLE) {
 			continue;
 		}
-		release_command_buffer_resources(cb, renderer);
+		release_command_buffer_resources(cb, renderer, 0);
 		if (cb->binary_semaphore != VK_NULL_HANDLE) {
 			vkDestroySemaphore(renderer->dev->dev, cb->binary_semaphore, NULL);
 		}
+		VkSemaphore *sem_ptr;
+		wl_array_for_each(sem_ptr, &cb->wait_semaphores) {
+			vkDestroySemaphore(renderer->dev->dev, *sem_ptr, NULL);
+		}
+		wl_array_release(&cb->wait_semaphores);
 	}
 
 	// stage.cb automatically freed with command pool
@@ -2438,6 +2441,11 @@ struct wlr_renderer *vulkan_renderer_create_for_device(struct wlr_vk_device *dev
 	wl_list_init(&renderer->color_transforms);
 	wl_list_init(&renderer->pipeline_layouts);
 
+	uint64_t cap_syncobj_timeline;
+	if (dev->drm_fd >= 0 && drmGetCap(dev->drm_fd, DRM_CAP_SYNCOBJ_TIMELINE, &cap_syncobj_timeline) == 0) {
+		renderer->wlr_renderer.features.timeline = dev->sync_file_import_export && cap_syncobj_timeline != 0;
+	}
+
 	if (!init_static_render_data(renderer)) {
 		goto error;
 	}
@@ -2506,11 +2514,6 @@ struct wlr_renderer *wlr_vk_renderer_create_with_drm_fd(int drm_fd) {
 	// Do not use the drm_fd that was passed in: we should prefer the render
 	// node even if a primary node was provided
 	dev->drm_fd = vulkan_open_phdev_drm_fd(phdev);
-	if (dev->drm_fd < 0) {
-		vulkan_device_destroy(dev);
-		vulkan_instance_destroy(ini);
-		return NULL;
-	}
 
 	return vulkan_renderer_create_for_device(dev);
 }

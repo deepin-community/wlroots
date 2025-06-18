@@ -17,15 +17,17 @@ struct wlr_transient_seat_v1 {
 	struct wl_resource *resource;
 	struct wlr_seat *seat;
 
-        // private state
-	struct wl_listener seat_destroy;
+	struct {
+		struct wl_listener seat_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_transient_seat_manager_v1 {
 	struct wl_global *global;
-	struct wl_listener display_destroy;
 
 	struct {
+		struct wl_signal destroy;
+
 		/**
 		 * Upon receiving this signal, call
 		 * wlr_transient_seat_v1_ready() to pass a newly created seat
@@ -35,6 +37,10 @@ struct wlr_transient_seat_manager_v1 {
 		 */
 		struct wl_signal create_seat; // struct wlr_transient_seat_v1
 	} events;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_transient_seat_manager_v1 *wlr_transient_seat_manager_v1_create(

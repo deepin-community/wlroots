@@ -146,7 +146,6 @@ static void frame_destroy(struct wlr_screencopy_frame_v1 *frame) {
 	wl_list_remove(&frame->link);
 	wl_list_remove(&frame->output_commit.link);
 	wl_list_remove(&frame->output_destroy.link);
-	wl_list_remove(&frame->output_enable.link);
 	// Make the frame resource inert
 	wl_resource_set_user_data(frame->resource, NULL);
 	wlr_buffer_unlock(frame->buffer);
@@ -165,17 +164,19 @@ static void frame_send_damage(struct wlr_screencopy_frame_v1 *frame) {
 		return;
 	}
 
-	// TODO: send fine-grained damage events
-	struct pixman_box32 *damage_box =
-		pixman_region32_extents(&damage->damage);
+	int n_boxes;
+	const pixman_box32_t *boxes = pixman_region32_rectangles(&damage->damage, &n_boxes);
+	for (int i = 0; i < n_boxes; i++) {
+		const pixman_box32_t *box = &boxes[i];
 
-	int damage_x = damage_box->x1;
-	int damage_y = damage_box->y1;
-	int damage_width = damage_box->x2 - damage_box->x1;
-	int damage_height = damage_box->y2 - damage_box->y1;
+		int damage_x = box->x1;
+		int damage_y = box->y1;
+		int damage_width = box->x2 - box->x1;
+		int damage_height = box->y2 - box->y1;
 
-	zwlr_screencopy_frame_v1_send_damage(frame->resource,
-		damage_x, damage_y, damage_width, damage_height);
+		zwlr_screencopy_frame_v1_send_damage(frame->resource,
+			damage_x, damage_y, damage_width, damage_height);
+	}
 
 	pixman_region32_clear(&damage->damage);
 }
@@ -286,6 +287,10 @@ static void frame_handle_output_commit(struct wl_listener *listener,
 	struct wlr_output_event_commit *event = data;
 	struct wlr_output *output = frame->output;
 
+	if (event->state->committed & WLR_OUTPUT_STATE_ENABLED && !output->enabled) {
+		goto err;
+	}
+
 	if (!(event->state->committed & WLR_OUTPUT_STATE_BUFFER)) {
 		return;
 	}
@@ -297,7 +302,7 @@ static void frame_handle_output_commit(struct wl_listener *listener,
 	if (frame->with_damage) {
 		struct screencopy_damage *damage =
 			screencopy_damage_get_or_create(frame->client, output);
-		if (damage && !pixman_region32_not_empty(&damage->damage)) {
+		if (damage && pixman_region32_empty(&damage->damage)) {
 			return;
 		}
 	}
@@ -336,16 +341,6 @@ static void frame_handle_output_commit(struct wl_listener *listener,
 err:
 	zwlr_screencopy_frame_v1_send_failed(frame->resource);
 	frame_destroy(frame);
-}
-
-static void frame_handle_output_enable(struct wl_listener *listener,
-		void *data) {
-	struct wlr_screencopy_frame_v1 *frame =
-		wl_container_of(listener, frame, output_enable);
-	if (!frame->output->enabled) {
-		zwlr_screencopy_frame_v1_send_failed(frame->resource);
-		frame_destroy(frame);
-	}
 }
 
 static void frame_handle_output_destroy(struct wl_listener *listener,
@@ -439,9 +434,6 @@ static void frame_handle_copy(struct wl_client *wl_client,
 	wl_signal_add(&output->events.commit, &frame->output_commit);
 	frame->output_commit.notify = frame_handle_output_commit;
 
-	wl_signal_add(&output->events.destroy, &frame->output_enable);
-	frame->output_enable.notify = frame_handle_output_enable;
-
 	// Request a frame because we can't assume that the current front buffer is still usable. It may
 	// have been released already, and we shouldn't lock it here because compositors want to render
 	// into the least damaged buffer.
@@ -526,7 +518,6 @@ static void capture_output(struct wl_client *wl_client,
 	wl_list_insert(&client->manager->frames, &frame->link);
 
 	wl_list_init(&frame->output_commit.link);
-	wl_list_init(&frame->output_enable.link);
 
 	wl_signal_add(&output->events.destroy, &frame->output_destroy);
 	frame->output_destroy.notify = frame_handle_output_destroy;
@@ -542,8 +533,7 @@ static void capture_output(struct wl_client *wl_client,
 		goto error;
 	}
 
-	int buffer_age;
-	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain, &buffer_age);
+	struct wlr_buffer *buffer = wlr_swapchain_acquire(output->swapchain);
 	if (buffer == NULL) {
 		goto error;
 	}
@@ -699,6 +689,9 @@ static void handle_display_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_screencopy_manager_v1 *manager =
 		wl_container_of(listener, manager, display_destroy);
 	wl_signal_emit_mutable(&manager->events.destroy, manager);
+
+	assert(wl_list_empty(&manager->events.destroy.listener_list));
+
 	wl_list_remove(&manager->display_destroy.link);
 	wl_global_destroy(manager->global);
 	free(manager);

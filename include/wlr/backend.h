@@ -25,9 +25,20 @@ struct wlr_backend_output_state {
 
 /**
  * A backend provides a set of input and output devices.
+ *
+ * Buffer capabilities and features can change over the lifetime of a backend,
+ * for instance when a child backend is added to a multi-backend.
  */
 struct wlr_backend {
 	const struct wlr_backend_impl *impl;
+
+	// Bitfield of supported buffer capabilities (see enum wlr_buffer_cap)
+	uint32_t buffer_caps;
+
+	struct {
+		// Whether wait/signal timelines are supported in output commits
+		bool timeline;
+	} features;
 
 	struct {
 		/** Raised when destroyed */
@@ -54,13 +65,12 @@ struct wlr_backend *wlr_backend_autocreate(struct wl_event_loop *loop,
 	struct wlr_session **session_ptr);
 /**
  * Start the backend. This may signal new_input or new_output immediately, but
- * may also wait until the display's event loop begins. Returns false on
- * failure.
+ * may also wait until the event loop is started. Returns false on failure.
  */
 bool wlr_backend_start(struct wlr_backend *backend);
 /**
  * Destroy the backend and clean up all of its resources. Normally called
- * automatically when the struct wl_display is destroyed.
+ * automatically when the event loop is destroyed.
  */
 void wlr_backend_destroy(struct wlr_backend *backend);
 /**

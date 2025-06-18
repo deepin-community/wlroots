@@ -1,6 +1,5 @@
 wayland_client = dependency('wayland-client',
-	fallback: 'wayland',
-	default_options: wayland_project_options,
+	kwargs: wayland_kwargs,
 )
 wlr_deps += wayland_client
 
@@ -15,6 +14,7 @@ wlr_files += files(
 client_protos = [
 	'drm',
 	'linux-dmabuf-v1',
+	'linux-drm-syncobj-v1',
 	'pointer-gestures-unstable-v1',
 	'presentation-time',
 	'relative-pointer-unstable-v1',

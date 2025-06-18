@@ -51,9 +51,7 @@ struct wlr_linux_dmabuf_feedback_v1_table_entry {
 	uint64_t modifier;
 };
 
-// TODO: switch back to static_assert once this fix propagates in stable trees:
-// https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=255290
-_Static_assert(sizeof(struct wlr_linux_dmabuf_feedback_v1_table_entry) == 16,
+static_assert(sizeof(struct wlr_linux_dmabuf_feedback_v1_table_entry) == 16,
 	"Expected wlr_linux_dmabuf_feedback_v1_table_entry to be tightly packed");
 
 struct wlr_linux_dmabuf_v1_surface {
@@ -102,11 +100,14 @@ static struct wlr_dmabuf_v1_buffer *dmabuf_v1_buffer_from_buffer(
 static void buffer_destroy(struct wlr_buffer *wlr_buffer) {
 	struct wlr_dmabuf_v1_buffer *buffer =
 		dmabuf_v1_buffer_from_buffer(wlr_buffer);
+	wl_list_remove(&buffer->release.link);
+
+	wlr_buffer_finish(wlr_buffer);
+
 	if (buffer->resource != NULL) {
 		wl_resource_set_user_data(buffer->resource, NULL);
 	}
 	wlr_dmabuf_attributes_finish(&buffer->attributes);
-	wl_list_remove(&buffer->release.link);
 	free(buffer);
 }
 
@@ -215,11 +216,11 @@ static bool check_import_dmabuf(struct wlr_dmabuf_attributes *attribs, void *dat
 	for (int i = 0; i < attribs->n_planes; i++) {
 		uint32_t handle = 0;
 		if (drmPrimeFDToHandle(linux_dmabuf->main_device_fd, attribs->fd[i], &handle) != 0) {
-			wlr_log_errno(WLR_DEBUG, "Failed to import DMA-BUF FD");
+			wlr_log_errno(WLR_ERROR, "Failed to import DMA-BUF FD for plane %d", i);
 			return false;
 		}
 		if (drmCloseBufferHandle(linux_dmabuf->main_device_fd, handle) != 0) {
-			wlr_log_errno(WLR_ERROR, "Failed to close buffer handle");
+			wlr_log_errno(WLR_ERROR, "Failed to close buffer handle for plane %d", i);
 			return false;
 		}
 	}
@@ -268,10 +269,8 @@ static void params_create_common(struct wl_resource *params_resource,
 	}
 
 	/* reject unknown flags */
-	uint32_t all_flags = ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_Y_INVERT |
-		ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_INTERLACED |
-		ZWP_LINUX_BUFFER_PARAMS_V1_FLAGS_BOTTOM_FIRST;
-	if (flags & ~all_flags) {
+	uint32_t version = wl_resource_get_version(params_resource);
+	if (!zwp_linux_buffer_params_v1_flags_is_valid(flags, version)) {
 		wl_resource_post_error(params_resource,
 			ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT,
 			"Unknown dmabuf flags %"PRIu32, flags);
@@ -860,6 +859,8 @@ static const struct wlr_buffer_resource_interface buffer_resource_interface = {
 static void linux_dmabuf_v1_destroy(struct wlr_linux_dmabuf_v1 *linux_dmabuf) {
 	wl_signal_emit_mutable(&linux_dmabuf->events.destroy, linux_dmabuf);
 
+	assert(wl_list_empty(&linux_dmabuf->events.destroy.listener_list));
+
 	struct wlr_linux_dmabuf_v1_surface *surface, *surface_tmp;
 	wl_list_for_each_safe(surface, surface_tmp, &linux_dmabuf->surfaces, link) {
 		surface_destroy(surface);
@@ -959,6 +960,7 @@ struct wlr_linux_dmabuf_v1 *wlr_linux_dmabuf_v1_create(struct wl_display *displa
 	linux_dmabuf->main_device_fd = -1;
 
 	wl_list_init(&linux_dmabuf->surfaces);
+
 	wl_signal_init(&linux_dmabuf->events.destroy);
 
 	linux_dmabuf->global = wl_global_create(display, &zwp_linux_dmabuf_v1_interface,

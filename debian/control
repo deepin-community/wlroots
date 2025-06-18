@@ -16,12 +16,12 @@ Build-Depends: dpkg-dev (>= 1.22.5),
  libgles2-mesa-dev,
  libinput-dev,
  libliftoff-dev (>= 0.4.1),
- libpixman-1-dev,
+ libpixman-1-dev (>= 0.43.0),
  libpng-dev,
  libseat-dev,
  libsystemd-dev,
  libvulkan-dev,
- libwayland-dev (>= 1.23),
+ libwayland-dev (>= 1.23.1),
  libx11-xcb-dev,
  libxcb1-dev,
  libxcb-composite0-dev,
@@ -40,8 +40,9 @@ Build-Depends: dpkg-dev (>= 1.22.5),
  libxkbcommon-dev,
  meson,
  pkgconf,
- wayland-protocols (>= 1.32),
+ wayland-protocols (>= 1.41),
  xwayland,
+Suggests: liblcms2-dev,
 Standards-Version: 4.6.2
 Section: libs
 Homepage: https://gitlab.freedesktop.org/wlroots/wlroots/
@@ -49,13 +50,13 @@ Vcs-Git: https://salsa.debian.org/swaywm-team/wlroots.git
 Vcs-Browser: https://salsa.debian.org/swaywm-team/wlroots
 Rules-Requires-Root: no
 
-Package: libwlroots-0.18-dev
+Package: libwlroots-0.19-dev
 Section: libdevel
 Architecture: any
 Multi-Arch: same
 Depends:
  ${misc:Depends},
- libwlroots-0.18 (= ${binary:Version}),
+ libwlroots-0.19 (= ${binary:Version}),
  libcap-dev,
  libdisplay-info-dev,
  libdrm-dev (>= 2.4.114),
@@ -93,7 +94,7 @@ Description: Modular wayland compositor library - development headers
  .
  This package contains the development headers.
 
-Package: libwlroots-0.18
+Package: libwlroots-0.19
 Architecture: any
 Multi-Arch: same
 Depends:
@@ -105,7 +106,7 @@ Description: Modular wayland compositor library - shared library
  .
  This package contains the shared library.
 
-Package: libwlroots-0.18-examples
+Package: libwlroots-0.19-examples
 Architecture: any
 Depends:
  ${misc:Depends},

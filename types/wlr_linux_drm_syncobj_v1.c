@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <wlr/render/drm_syncobj.h>
+#include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 #include <wlr/util/log.h>
@@ -29,7 +30,6 @@ struct wlr_linux_drm_syncobj_surface_v1_commit {
 	struct wlr_drm_syncobj_timeline_waiter waiter;
 	uint32_t cached_seq;
 
-	struct wl_listener waiter_ready;
 	struct wl_listener surface_destroy;
 };
 
@@ -194,14 +194,13 @@ static struct wlr_linux_drm_syncobj_surface_v1 *surface_from_wlr_surface(
 static void surface_commit_destroy(struct wlr_linux_drm_syncobj_surface_v1_commit *commit) {
 	wlr_surface_unlock_cached(commit->surface->surface, commit->cached_seq);
 	wl_list_remove(&commit->surface_destroy.link);
-	wl_list_remove(&commit->waiter_ready.link);
 	wlr_drm_syncobj_timeline_waiter_finish(&commit->waiter);
 	free(commit);
 }
 
-static void surface_commit_handle_waiter_ready(struct wl_listener *listener, void *data) {
+static void surface_commit_handle_waiter_ready(struct wlr_drm_syncobj_timeline_waiter *waiter) {
 	struct wlr_linux_drm_syncobj_surface_v1_commit *commit =
-		wl_container_of(listener, commit, waiter_ready);
+		wl_container_of(waiter, commit, waiter);
 	surface_commit_destroy(commit);
 }
 
@@ -233,16 +232,13 @@ static bool lock_surface_commit(struct wlr_linux_drm_syncobj_surface_v1 *surface
 	struct wl_display *display = wl_client_get_display(client);
 	struct wl_event_loop *loop = wl_display_get_event_loop(display);
 	if (!wlr_drm_syncobj_timeline_waiter_init(&commit->waiter, timeline, point,
-			flags, loop)) {
+			flags, loop, surface_commit_handle_waiter_ready)) {
 		free(commit);
 		return false;
 	}
 
 	commit->surface = surface;
 	commit->cached_seq = wlr_surface_lock_pending(surface->surface);
-
-	commit->waiter_ready.notify = surface_commit_handle_waiter_ready;
-	wl_signal_add(&commit->waiter.events.ready, &commit->waiter_ready);
 
 	commit->surface_destroy.notify = surface_commit_handle_surface_destroy;
 	wl_signal_add(&surface->surface->events.destroy, &commit->surface_destroy);
@@ -468,4 +464,47 @@ wlr_linux_drm_syncobj_v1_get_surface_state(struct wlr_surface *wlr_surface) {
 		return NULL;
 	}
 	return &surface->current;
+}
+
+struct release_signaller {
+	struct wlr_drm_syncobj_timeline *timeline;
+	uint64_t point;
+	struct wl_listener buffer_release;
+};
+
+static void release_signaller_handle_buffer_release(struct wl_listener *listener, void *data) {
+	struct release_signaller *signaller = wl_container_of(listener, signaller, buffer_release);
+
+	if (drmSyncobjTimelineSignal(signaller->timeline->drm_fd, &signaller->timeline->handle,
+			&signaller->point, 1) != 0) {
+		wlr_log(WLR_ERROR, "drmSyncobjTimelineSignal() failed");
+	}
+
+	wlr_drm_syncobj_timeline_unref(signaller->timeline);
+	wl_list_remove(&signaller->buffer_release.link);
+	free(signaller);
+}
+
+bool wlr_linux_drm_syncobj_v1_state_signal_release_with_buffer(
+		struct wlr_linux_drm_syncobj_surface_v1_state *state, struct wlr_buffer *buffer) {
+	assert(buffer->n_locks > 0);
+	if (state->release_timeline == NULL) {
+		// This can happen if an existing surface with a buffer has a
+		// syncobj_surface_v1_state created but no new buffer with release
+		// timeline committed.
+		return true;
+	}
+
+	struct release_signaller *signaller = calloc(1, sizeof(*signaller));
+	if (signaller == NULL) {
+		return false;
+	}
+
+	signaller->timeline = wlr_drm_syncobj_timeline_ref(state->release_timeline);
+	signaller->point = state->release_point;
+
+	signaller->buffer_release.notify = release_signaller_handle_buffer_release;
+	wl_signal_add(&buffer->events.release, &signaller->buffer_release);
+
+	return true;
 }

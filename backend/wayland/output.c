@@ -11,6 +11,7 @@
 #include <wayland-client-protocol.h>
 
 #include <wlr/interfaces/wlr_output.h>
+#include <wlr/render/drm_syncobj.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_output_layer.h>
 #include <wlr/util/log.h>
@@ -20,6 +21,7 @@
 #include "types/wlr_output.h"
 
 #include "linux-dmabuf-v1-client-protocol.h"
+#include "linux-drm-syncobj-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "xdg-activation-v1-client-protocol.h"
@@ -31,7 +33,9 @@ static const uint32_t SUPPORTED_OUTPUT_STATE =
 	WLR_OUTPUT_STATE_BUFFER |
 	WLR_OUTPUT_STATE_ENABLED |
 	WLR_OUTPUT_STATE_MODE |
-	WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED;
+	WLR_OUTPUT_STATE_ADAPTIVE_SYNC_ENABLED |
+	WLR_OUTPUT_STATE_WAIT_TIMELINE |
+	WLR_OUTPUT_STATE_SIGNAL_TIMELINE;
 
 static size_t last_output_num = 0;
 
@@ -94,14 +98,13 @@ static void presentation_feedback_handle_presented(void *data,
 		uint32_t seq_hi, uint32_t seq_lo, uint32_t flags) {
 	struct wlr_wl_presentation_feedback *feedback = data;
 
-	struct timespec t = {
-		.tv_sec = ((uint64_t)tv_sec_hi << 32) | tv_sec_lo,
-		.tv_nsec = tv_nsec,
-	};
 	struct wlr_output_event_present event = {
 		.commit_seq = feedback->commit_seq,
 		.presented = true,
-		.when = &t,
+		.when = {
+			.tv_sec = ((uint64_t)tv_sec_hi << 32) | tv_sec_lo,
+			.tv_nsec = tv_nsec,
+		},
 		.seq = ((uint64_t)seq_hi << 32) | seq_lo,
 		.refresh = refresh_ns,
 		.flags = flags,
@@ -131,6 +134,11 @@ static const struct wp_presentation_feedback_listener
 	.discarded = presentation_feedback_handle_discarded,
 };
 
+static void buffer_remove_drm_syncobj_waiter(struct wlr_wl_buffer *buffer) {
+	wlr_drm_syncobj_timeline_waiter_finish(&buffer->drm_syncobj_waiter);
+	buffer->has_drm_syncobj_waiter = false;
+}
+
 void destroy_wl_buffer(struct wlr_wl_buffer *buffer) {
 	if (buffer == NULL) {
 		return;
@@ -138,21 +146,41 @@ void destroy_wl_buffer(struct wlr_wl_buffer *buffer) {
 	wl_list_remove(&buffer->buffer_destroy.link);
 	wl_list_remove(&buffer->link);
 	wl_buffer_destroy(buffer->wl_buffer);
+	if (buffer->has_drm_syncobj_waiter) {
+		buffer_remove_drm_syncobj_waiter(buffer);
+	}
 	if (!buffer->released) {
 		wlr_buffer_unlock(buffer->buffer);
 	}
+	wlr_drm_syncobj_timeline_unref(buffer->fallback_signal_timeline);
 	free(buffer);
+}
+
+static void buffer_release(struct wlr_wl_buffer *buffer) {
+	if (buffer->released) {
+		return;
+	}
+	buffer->released = true;
+	wlr_buffer_unlock(buffer->buffer); // might free buffer
 }
 
 static void buffer_handle_release(void *data, struct wl_buffer *wl_buffer) {
 	struct wlr_wl_buffer *buffer = data;
-	buffer->released = true;
-	wlr_buffer_unlock(buffer->buffer); // might free buffer
+	if (buffer->has_drm_syncobj_waiter) {
+		return;
+	}
+	buffer_release(buffer);
 }
 
 static const struct wl_buffer_listener buffer_listener = {
 	.release = buffer_handle_release,
 };
+
+static void buffer_handle_drm_syncobj_ready(struct wlr_drm_syncobj_timeline_waiter *waiter) {
+	struct wlr_wl_buffer *buffer = wl_container_of(waiter, buffer, drm_syncobj_waiter);
+	buffer_remove_drm_syncobj_waiter(buffer);
+	buffer_release(buffer);
+}
 
 static void buffer_handle_buffer_destroy(struct wl_listener *listener,
 		void *data) {
@@ -176,6 +204,30 @@ static bool test_buffer(struct wlr_wl_backend *wl,
 	}
 }
 
+struct dmabuf_listener_data {
+	struct wl_buffer *wl_buffer;
+	bool done;
+};
+
+static void dmabuf_handle_created(void *data_, struct zwp_linux_buffer_params_v1 *params,
+		struct wl_buffer *buffer) {
+	struct dmabuf_listener_data *data = data_;
+	data->wl_buffer = buffer;
+	data->done = true;
+	wlr_log(WLR_DEBUG, "DMA-BUF imported into parent Wayland compositor");
+}
+
+static void dmabuf_handle_failed(void *data_, struct zwp_linux_buffer_params_v1 *params) {
+	struct dmabuf_listener_data *data = data_;
+	data->done = true;
+	wlr_log(WLR_ERROR, "Failed to import DMA-BUF into parent Wayland compositor");
+}
+
+static const struct zwp_linux_buffer_params_v1_listener dmabuf_listener = {
+	.created = dmabuf_handle_created,
+	.failed = dmabuf_handle_failed,
+};
+
 static struct wl_buffer *import_dmabuf(struct wlr_wl_backend *wl,
 		struct wlr_dmabuf_attributes *dmabuf) {
 	uint32_t modifier_hi = dmabuf->modifier >> 32;
@@ -187,11 +239,28 @@ static struct wl_buffer *import_dmabuf(struct wlr_wl_backend *wl,
 			dmabuf->offset[i], dmabuf->stride[i], modifier_hi, modifier_lo);
 	}
 
-	struct wl_buffer *wl_buffer = zwp_linux_buffer_params_v1_create_immed(
-		params, dmabuf->width, dmabuf->height, dmabuf->format, 0);
+	struct dmabuf_listener_data data = {0};
+	zwp_linux_buffer_params_v1_add_listener(params, &dmabuf_listener, &data);
+	zwp_linux_buffer_params_v1_create(params, dmabuf->width, dmabuf->height, dmabuf->format, 0);
+
+	struct wl_event_queue *display_queue =
+		wl_proxy_get_queue((struct wl_proxy *)wl->remote_display);
+	wl_proxy_set_queue((struct wl_proxy *)params, wl->busy_loop_queue);
+
+	while (!data.done) {
+		if (wl_display_dispatch_queue(wl->remote_display, wl->busy_loop_queue) < 0) {
+			wlr_log(WLR_ERROR, "wl_display_dispatch_queue() failed");
+			break;
+		}
+	}
+
+	struct wl_buffer *buffer = data.wl_buffer;
+	if (buffer != NULL) {
+		wl_proxy_set_queue((struct wl_proxy *)buffer, display_queue);
+	}
+
 	zwp_linux_buffer_params_v1_destroy(params);
-	// TODO: handle create() errors
-	return wl_buffer;
+	return buffer;
 }
 
 static struct wl_buffer *import_shm(struct wlr_wl_backend *wl,
@@ -262,6 +331,58 @@ static struct wlr_wl_buffer *get_or_create_wl_buffer(struct wlr_wl_backend *wl,
 	return create_wl_buffer(wl, wlr_buffer);
 }
 
+void destroy_wl_drm_syncobj_timeline(struct wlr_wl_drm_syncobj_timeline *timeline) {
+	wp_linux_drm_syncobj_timeline_v1_destroy(timeline->wl);
+	wlr_addon_finish(&timeline->addon);
+	wl_list_remove(&timeline->link);
+	free(timeline);
+}
+
+static void drm_syncobj_timeline_addon_destroy(struct wlr_addon *addon) {
+	struct wlr_wl_drm_syncobj_timeline *timeline = wl_container_of(addon, timeline, addon);
+	destroy_wl_drm_syncobj_timeline(timeline);
+}
+
+static const struct wlr_addon_interface drm_syncobj_timeline_addon_impl = {
+	.name = "wlr_wl_drm_syncobj_timeline",
+	.destroy = drm_syncobj_timeline_addon_destroy,
+};
+
+static struct wlr_wl_drm_syncobj_timeline *get_or_create_drm_syncobj_timeline(
+		struct wlr_wl_backend *wl, struct wlr_drm_syncobj_timeline *wlr_timeline) {
+	struct wlr_addon *addon =
+		wlr_addon_find(&wlr_timeline->addons, wl, &drm_syncobj_timeline_addon_impl);
+	if (addon != NULL) {
+		struct wlr_wl_drm_syncobj_timeline *timeline = wl_container_of(addon, timeline, addon);
+		return timeline;
+	}
+
+	struct wlr_wl_drm_syncobj_timeline *timeline = calloc(1, sizeof(*timeline));
+	if (timeline == NULL) {
+		return NULL;
+	}
+
+	timeline->base = wlr_timeline;
+
+	int fd = wlr_drm_syncobj_timeline_export(wlr_timeline);
+	if (fd < 0) {
+		free(timeline);
+		return NULL;
+	}
+
+	timeline->wl = wp_linux_drm_syncobj_manager_v1_import_timeline(wl->drm_syncobj_manager_v1, fd);
+	close(fd);
+	if (timeline->wl == NULL) {
+		free(timeline);
+		return NULL;
+	}
+
+	wlr_addon_init(&timeline->addon, &wlr_timeline->addons, wl, &drm_syncobj_timeline_addon_impl);
+	wl_list_insert(&wl->drm_syncobj_timelines, &timeline->link);
+
+	return timeline;
+}
+
 static bool update_title(struct wlr_wl_output *output, const char *title) {
 	struct wlr_output *wlr_output = &output->wlr_output;
 
@@ -301,6 +422,28 @@ static bool output_test(struct wlr_output *wlr_output,
 	struct wlr_wl_output *output =
 		get_wl_output_from_output(wlr_output);
 
+	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
+		// If the size doesn't match, reject buffer (scaling is not currently
+		// supported but could be implemented with viewporter)
+		int pending_width, pending_height;
+		output_pending_resolution(wlr_output, state,
+			&pending_width, &pending_height);
+		if (state->buffer->width != pending_width ||
+				state->buffer->height != pending_height) {
+			wlr_log(WLR_DEBUG, "Primary buffer size mismatch");
+			return false;
+		}
+		// Source crop is also not currently supported
+		struct wlr_fbox src_box;
+		output_state_get_buffer_src_box(state, &src_box);
+		if (src_box.x != 0.0 || src_box.y != 0.0 ||
+				src_box.width != (double)state->buffer->width ||
+				src_box.height != (double)state->buffer->height) {
+			wlr_log(WLR_DEBUG, "Source crop not supported in wayland output");
+			return false;
+		}
+	}
+
 	uint32_t unsupported = state->committed & ~SUPPORTED_OUTPUT_STATE;
 	if (unsupported != 0) {
 		wlr_log(WLR_DEBUG, "Unsupported output state fields: 0x%"PRIx32,
@@ -332,6 +475,21 @@ static bool output_test(struct wlr_output *wlr_output,
 			!test_buffer(output->backend, state->buffer)) {
 		wlr_log(WLR_DEBUG, "Unsupported buffer format");
 		return false;
+	}
+
+	if ((state->committed & WLR_OUTPUT_STATE_SIGNAL_TIMELINE) &&
+			!(state->committed & WLR_OUTPUT_STATE_WAIT_TIMELINE)) {
+		wlr_log(WLR_DEBUG, "Signal timeline requires a wait timeline");
+		return false;
+	}
+
+	if ((state->committed & WLR_OUTPUT_STATE_WAIT_TIMELINE) ||
+			(state->committed & WLR_OUTPUT_STATE_SIGNAL_TIMELINE)) {
+		struct wlr_dmabuf_attributes dmabuf;
+		if (!wlr_buffer_get_dmabuf(state->buffer, &dmabuf)) {
+			wlr_log(WLR_DEBUG, "Wait/signal timelines require DMA-BUFs");
+			return false;
+		}
 	}
 
 	if (state->committed & WLR_OUTPUT_STATE_LAYERS) {
@@ -565,14 +723,14 @@ static const struct wl_callback_listener unmap_callback_listener = {
 	.done = unmap_callback_handle_done,
 };
 
-static bool output_commit(struct wlr_output *wlr_output,
-		const struct wlr_output_state *state) {
-	struct wlr_wl_output *output =
-		get_wl_output_from_output(wlr_output);
+static bool output_commit(struct wlr_output *wlr_output, const struct wlr_output_state *state) {
+	struct wlr_wl_output *output = get_wl_output_from_output(wlr_output);
 
 	if (!output_test(wlr_output, state)) {
 		return false;
 	}
+
+	struct wlr_wl_backend *wl = output->backend;
 
 	bool pending_enabled = output_pending_enabled(wlr_output, state);
 
@@ -598,15 +756,28 @@ static bool output_commit(struct wlr_output *wlr_output,
 		wl_surface_commit(output->surface);
 		output->initialized = true;
 
-		wl_display_flush(output->backend->remote_display);
+		struct wl_event_queue *display_queue =
+			wl_proxy_get_queue((struct wl_proxy *)wl->remote_display);
+		wl_proxy_set_queue((struct wl_proxy *)output->xdg_surface, wl->busy_loop_queue);
+		wl_proxy_set_queue((struct wl_proxy *)output->xdg_toplevel, wl->busy_loop_queue);
+
+		wl_display_flush(wl->remote_display);
 		while (!output->configured) {
-			if (wl_display_dispatch(output->backend->remote_display) == -1) {
-				wlr_log(WLR_ERROR, "wl_display_dispatch() failed");
-				return false;
+			if (wl_display_dispatch_queue(wl->remote_display, wl->busy_loop_queue) == -1) {
+				wlr_log(WLR_ERROR, "wl_display_dispatch_queue() failed");
+				break;
 			}
+		}
+
+		wl_proxy_set_queue((struct wl_proxy *)output->xdg_surface, display_queue);
+		wl_proxy_set_queue((struct wl_proxy *)output->xdg_toplevel, display_queue);
+
+		if (!output->configured) {
+			return false;
 		}
 	}
 
+	struct wlr_wl_buffer *buffer = NULL;
 	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
 		const pixman_region32_t *damage = NULL;
 		if (state->committed & WLR_OUTPUT_STATE_DAMAGE) {
@@ -614,14 +785,70 @@ static bool output_commit(struct wlr_output *wlr_output,
 		}
 
 		struct wlr_buffer *wlr_buffer = state->buffer;
-		struct wlr_wl_buffer *buffer =
-			get_or_create_wl_buffer(output->backend, wlr_buffer);
+		buffer = get_or_create_wl_buffer(wl, wlr_buffer);
 		if (buffer == NULL) {
 			return false;
 		}
 
 		wl_surface_attach(output->surface, buffer->wl_buffer, 0, 0);
 		damage_surface(output->surface, damage);
+	}
+
+	if (state->committed & WLR_OUTPUT_STATE_WAIT_TIMELINE) {
+		struct wlr_wl_drm_syncobj_timeline *wait_timeline =
+			get_or_create_drm_syncobj_timeline(wl, state->wait_timeline);
+
+		struct wlr_wl_drm_syncobj_timeline *signal_timeline;
+		uint64_t signal_point;
+		if (state->committed & WLR_OUTPUT_STATE_SIGNAL_TIMELINE) {
+			signal_timeline = get_or_create_drm_syncobj_timeline(wl, state->signal_timeline);
+			signal_point = state->signal_point;
+		} else {
+			if (buffer->fallback_signal_timeline == NULL) {
+				buffer->fallback_signal_timeline =
+					wlr_drm_syncobj_timeline_create(wl->drm_fd);
+				if (buffer->fallback_signal_timeline == NULL) {
+					return false;
+				}
+			}
+			signal_timeline =
+				get_or_create_drm_syncobj_timeline(wl, buffer->fallback_signal_timeline);
+			signal_point = ++buffer->fallback_signal_point;
+		}
+
+		if (wait_timeline == NULL || signal_timeline == NULL) {
+			return false;
+		}
+
+		if (output->drm_syncobj_surface_v1 == NULL) {
+			output->drm_syncobj_surface_v1 = wp_linux_drm_syncobj_manager_v1_get_surface(
+				wl->drm_syncobj_manager_v1, output->surface);
+			if (output->drm_syncobj_surface_v1 == NULL) {
+				return false;
+			}
+		}
+
+		uint32_t wait_point_hi = state->wait_point >> 32;
+		uint32_t wait_point_lo = state->wait_point & UINT32_MAX;
+		uint32_t signal_point_hi = signal_point >> 32;
+		uint32_t signal_point_lo = signal_point & UINT32_MAX;
+
+		wp_linux_drm_syncobj_surface_v1_set_acquire_point(output->drm_syncobj_surface_v1,
+			wait_timeline->wl, wait_point_hi, wait_point_lo);
+		wp_linux_drm_syncobj_surface_v1_set_release_point(output->drm_syncobj_surface_v1,
+			signal_timeline->wl, signal_point_hi, signal_point_lo);
+
+		if (!wlr_drm_syncobj_timeline_waiter_init(&buffer->drm_syncobj_waiter,
+				signal_timeline->base, signal_point, 0, wl->event_loop,
+				buffer_handle_drm_syncobj_ready)) {
+			return false;
+		}
+		buffer->has_drm_syncobj_waiter = true;
+	} else {
+		if (output->drm_syncobj_surface_v1 != NULL) {
+			wp_linux_drm_syncobj_surface_v1_destroy(output->drm_syncobj_surface_v1);
+			output->drm_syncobj_surface_v1 = NULL;
+		}
 	}
 
 	if ((state->committed & WLR_OUTPUT_STATE_LAYERS) &&
@@ -637,9 +864,8 @@ static bool output_commit(struct wlr_output *wlr_output,
 		wl_callback_add_listener(output->frame_callback, &frame_listener, output);
 
 		struct wp_presentation_feedback *wp_feedback = NULL;
-		if (output->backend->presentation != NULL) {
-			wp_feedback = wp_presentation_feedback(output->backend->presentation,
-				output->surface);
+		if (wl->presentation != NULL) {
+			wp_feedback = wp_presentation_feedback(wl->presentation, output->surface);
 		}
 
 		if (output->has_configure_serial) {
@@ -672,7 +898,7 @@ static bool output_commit(struct wlr_output *wlr_output,
 		}
 	}
 
-	wl_display_flush(output->backend->remote_display);
+	wl_display_flush(wl->remote_display);
 
 	return true;
 }
@@ -728,6 +954,8 @@ static void output_destroy(struct wlr_output *wlr_output) {
 		return;
 	}
 
+	wlr_output_finish(wlr_output);
+
 	wl_list_remove(&output->link);
 
 	if (output->cursor.surface) {
@@ -748,6 +976,9 @@ static void output_destroy(struct wlr_output *wlr_output) {
 		wl_callback_destroy(output->unmap_callback);
 	}
 
+	if (output->drm_syncobj_surface_v1) {
+		wp_linux_drm_syncobj_surface_v1_destroy(output->drm_syncobj_surface_v1);
+	}
 	if (output->zxdg_toplevel_decoration_v1) {
 		zxdg_toplevel_decoration_v1_destroy(output->zxdg_toplevel_decoration_v1);
 	}
@@ -823,6 +1054,12 @@ static void xdg_surface_handle_configure(void *data,
 	output->configured = true;
 	output->has_configure_serial = true;
 	output->configure_serial = serial;
+
+	if (!output->wlr_output.enabled) {
+		// We're waiting for a configure event after an initial commit to enable
+		// the output. Do not notify the compositor about the requested state.
+		return;
+	}
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
+#include <wlr/util/addon.h>
 
 /**
  * A synchronization timeline.
@@ -29,20 +30,24 @@ struct wlr_drm_syncobj_timeline {
 	int drm_fd;
 	uint32_t handle;
 
-	// private state
+	struct wlr_addon_set addons;
 
-	size_t n_refs;
+	struct {
+		size_t n_refs;
+	} WLR_PRIVATE;
 };
+
+struct wlr_drm_syncobj_timeline_waiter;
+
+typedef void (*wlr_drm_syncobj_timeline_ready_callback)(
+	struct wlr_drm_syncobj_timeline_waiter *waiter);
 
 struct wlr_drm_syncobj_timeline_waiter {
 	struct {
-		struct wl_signal ready;
-	} events;
-
-	// private state
-
-	int ev_fd;
-	struct wl_event_source *event_source;
+		int ev_fd;
+		struct wl_event_source *event_source;
+		wlr_drm_syncobj_timeline_ready_callback callback;
+	} WLR_PRIVATE;
 };
 
 /**
@@ -63,6 +68,17 @@ struct wlr_drm_syncobj_timeline *wlr_drm_syncobj_timeline_ref(struct wlr_drm_syn
  */
 void wlr_drm_syncobj_timeline_unref(struct wlr_drm_syncobj_timeline *timeline);
 /**
+ * Export a drm_syncobj FD from a timeline.
+ */
+int wlr_drm_syncobj_timeline_export(struct wlr_drm_syncobj_timeline *timeline);
+/**
+ * Transfer a point from a timeline to another.
+ *
+ * Both timelines must have been created with the same DRM FD.
+ */
+bool wlr_drm_syncobj_timeline_transfer(struct wlr_drm_syncobj_timeline *dst,
+	uint64_t dst_point, struct wlr_drm_syncobj_timeline *src, uint64_t src_point);
+/**
  * Check if a timeline point has been signalled or has materialized.
  *
  * Flags can be:
@@ -78,10 +94,12 @@ bool wlr_drm_syncobj_timeline_check(struct wlr_drm_syncobj_timeline *timeline,
  * Asynchronously wait for a timeline point.
  *
  * See wlr_drm_syncobj_timeline_check() for a definition of flags.
+ *
+ * A callback must be provided that will be invoked when the waiter has finished.
  */
 bool wlr_drm_syncobj_timeline_waiter_init(struct wlr_drm_syncobj_timeline_waiter *waiter,
 	struct wlr_drm_syncobj_timeline *timeline, uint64_t point, uint32_t flags,
-	struct wl_event_loop *loop);
+	struct wl_event_loop *loop, wlr_drm_syncobj_timeline_ready_callback callback);
 /**
  * Cancel a timeline waiter.
  */

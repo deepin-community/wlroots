@@ -213,6 +213,27 @@ reinitialized to be used again.
 it, and free the memory. Such functions should always be able to accept a NULL
 pointer.
 
+If the object has signals, the destructor function must assert that their
+listener lists are empty.
+
+```c
+void wlr_thing_init(struct wlr_thing *thing) {
+	*thing = (struct wlr_thing){
+		// ...
+	};
+
+	wl_signal_init(&thing->events.destroy);
+	wl_signal_init(&thing->events.foo);
+}
+
+void wlr_thing_finish(struct wlr_thing *thing) {
+	wl_signal_emit_mutable(&thing->events.destroy, NULL);
+
+	assert(wl_list_empty(&thing->events.destroy.listener_list));
+	assert(wl_list_empty(&thing->events.foo.listener_list));
+}
+```
+
 ### Error Codes
 
 For functions not returning a value, they should return a (stdbool.h) bool to
@@ -236,6 +257,13 @@ used and `#undef` them after.
   comment.
 * Document the contents and container of a `struct wl_list` with a
   `// content.link` and `// container.list` comment.
+
+### Private fields
+
+Wrap private fields of public structures with `struct { … } WLR_PRIVATE`. This
+ensures that compositor authors don't use them by accident. Within wlroots
+`WLR_PRIVATE` is expanded to nothing, so private fields are accessed in the same
+way as public ones.
 
 ### Safety
 
@@ -325,12 +353,14 @@ struct wlr_compositor {
 	struct wl_global *global;
 	…
 
-	struct wl_listener display_destroy;
-
 	struct {
 		struct wl_signal new_surface;
 		struct wl_signal destroy;
 	} events;
+
+	struct {
+		struct wl_listener display_destroy;
+	} WLR_PRIVATE;
 };
 ```
 

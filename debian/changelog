@@ -1,3 +1,9 @@
+wlroots (0.19.0-0deepin1) unstable; urgency=medium
+
+  * Sync upstream 0.19.0.
+
+ -- xiangzelong <xiangzelong@deepin.org>  Wed, 18 Jun 2025 10:45:59 +0800
+
 wlroots (0.18.2-1deepin1) unstable; urgency=medium
 
   * update 0.18.2.

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wlr/types/wlr_output.h>
 #include <wlr/util/log.h>
 #include <wlr/util/edges.h>
 #include "types/wlr_xdg_shell.h"
@@ -297,18 +298,8 @@ static void xdg_toplevel_handle_resize(struct wl_client *client,
 	struct wlr_seat_client *seat =
 		wlr_seat_client_from_resource(seat_resource);
 
-	switch (edges) {
-	case XDG_TOPLEVEL_RESIZE_EDGE_NONE:
-	case XDG_TOPLEVEL_RESIZE_EDGE_TOP:
-	case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM:
-	case XDG_TOPLEVEL_RESIZE_EDGE_LEFT:
-	case XDG_TOPLEVEL_RESIZE_EDGE_RIGHT:
-	case XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT:
-	case XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT:
-	case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT:
-	case XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT:
-		break;
-	default:
+	uint32_t version = wl_resource_get_version(toplevel->base->resource);
+	if (!xdg_toplevel_resize_edge_is_valid(edges, version)) {
 		wl_resource_post_error(toplevel->base->resource,
 			XDG_TOPLEVEL_ERROR_INVALID_RESIZE_EDGE,
 			"provided value is not a valid variant of the resize_edge enum");
@@ -535,6 +526,17 @@ void destroy_xdg_toplevel(struct wlr_xdg_toplevel *toplevel) {
 
 	wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
 
+	assert(wl_list_empty(&toplevel->events.destroy.listener_list));
+	assert(wl_list_empty(&toplevel->events.request_maximize.listener_list));
+	assert(wl_list_empty(&toplevel->events.request_fullscreen.listener_list));
+	assert(wl_list_empty(&toplevel->events.request_minimize.listener_list));
+	assert(wl_list_empty(&toplevel->events.request_move.listener_list));
+	assert(wl_list_empty(&toplevel->events.request_resize.listener_list));
+	assert(wl_list_empty(&toplevel->events.request_show_window_menu.listener_list));
+	assert(wl_list_empty(&toplevel->events.set_parent.listener_list));
+	assert(wl_list_empty(&toplevel->events.set_title.listener_list));
+	assert(wl_list_empty(&toplevel->events.set_app_id.listener_list));
+
 	wlr_surface_synced_finish(&toplevel->synced);
 	toplevel->base->toplevel = NULL;
 	wl_resource_set_user_data(toplevel->resource, NULL);
@@ -543,6 +545,30 @@ void destroy_xdg_toplevel(struct wlr_xdg_toplevel *toplevel) {
 
 void wlr_xdg_toplevel_send_close(struct wlr_xdg_toplevel *toplevel) {
 	xdg_toplevel_send_close(toplevel->resource);
+}
+
+uint32_t wlr_xdg_toplevel_configure(struct wlr_xdg_toplevel *toplevel,
+		const struct wlr_xdg_toplevel_configure *configure) {
+	toplevel->scheduled.width = configure->width;
+	toplevel->scheduled.height = configure->height;
+	toplevel->scheduled.maximized = configure->maximized;
+	toplevel->scheduled.fullscreen = configure->fullscreen;
+	toplevel->scheduled.resizing = configure->resizing;
+	toplevel->scheduled.activated = configure->activated;
+	toplevel->scheduled.suspended = configure->suspended;
+	toplevel->scheduled.tiled = configure->tiled;
+
+	if (configure->fields & WLR_XDG_TOPLEVEL_CONFIGURE_BOUNDS) {
+		toplevel->scheduled.fields |= WLR_XDG_TOPLEVEL_CONFIGURE_BOUNDS;
+		toplevel->scheduled.bounds = configure->bounds;
+	}
+
+	if (configure->fields & WLR_XDG_TOPLEVEL_CONFIGURE_WM_CAPABILITIES) {
+		toplevel->scheduled.fields |= WLR_XDG_TOPLEVEL_CONFIGURE_WM_CAPABILITIES;
+		toplevel->scheduled.wm_capabilities = configure->wm_capabilities;
+	}
+
+	return wlr_xdg_surface_schedule_configure(toplevel->base);
 }
 
 uint32_t wlr_xdg_toplevel_set_size(struct wlr_xdg_toplevel *toplevel,

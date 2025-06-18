@@ -78,15 +78,17 @@ struct wlr_touch_point {
 	struct wlr_seat_client *focus_client;
 	double sx, sy;
 
-	struct wl_listener surface_destroy;
-	struct wl_listener focus_surface_destroy;
-	struct wl_listener client_destroy;
-
 	struct {
 		struct wl_signal destroy;
 	} events;
 
 	struct wl_list link;
+
+	struct {
+		struct wl_listener surface_destroy;
+		struct wl_listener focus_surface_destroy;
+		struct wl_listener client_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_seat_pointer_grab;
@@ -170,7 +172,10 @@ struct wlr_seat_pointer_grab {
 	void *data;
 };
 
-#define WLR_POINTER_BUTTONS_CAP 16
+struct wlr_seat_pointer_button {
+	uint32_t button;
+	size_t n_pressed;
+};
 
 struct wlr_seat_pointer_state {
 	struct wlr_seat *seat;
@@ -184,17 +189,21 @@ struct wlr_seat_pointer_state {
 	bool sent_axis_source;
 	enum wl_pointer_axis_source cached_axis_source;
 
-	uint32_t buttons[WLR_POINTER_BUTTONS_CAP];
+	struct wlr_seat_pointer_button buttons[WLR_POINTER_BUTTONS_CAP];
 	size_t button_count;
+
 	uint32_t grab_button;
 	uint32_t grab_serial;
 	uint32_t grab_time;
 
-	struct wl_listener surface_destroy;
 
 	struct {
 		struct wl_signal focus_change; // struct wlr_seat_pointer_focus_change_event
 	} events;
+
+	struct {
+		struct wl_listener surface_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_seat_keyboard_state {
@@ -204,18 +213,20 @@ struct wlr_seat_keyboard_state {
 	struct wlr_seat_client *focused_client;
 	struct wlr_surface *focused_surface;
 
-	struct wl_listener keyboard_destroy;
-	struct wl_listener keyboard_keymap;
-	struct wl_listener keyboard_repeat_info;
-
-	struct wl_listener surface_destroy;
-
 	struct wlr_seat_keyboard_grab *grab;
 	struct wlr_seat_keyboard_grab *default_grab;
 
 	struct {
 		struct wl_signal focus_change; // struct wlr_seat_keyboard_focus_change_event
 	} events;
+
+	struct {
+		struct wl_listener keyboard_destroy;
+		struct wl_listener keyboard_keymap;
+		struct wl_listener keyboard_repeat_info;
+
+		struct wl_listener surface_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_seat_touch_state {
@@ -239,7 +250,6 @@ struct wlr_seat {
 	char *name;
 	uint32_t capabilities;
 	uint32_t accumulated_capabilities;
-	struct timespec last_event;
 
 	struct wlr_data_source *selection_source;
 	uint32_t selection_serial;
@@ -257,11 +267,6 @@ struct wlr_seat {
 	struct wlr_seat_pointer_state pointer_state;
 	struct wlr_seat_keyboard_state keyboard_state;
 	struct wlr_seat_touch_state touch_state;
-
-	struct wl_listener display_destroy;
-	struct wl_listener selection_source_destroy;
-	struct wl_listener primary_selection_source_destroy;
-	struct wl_listener drag_source_destroy;
 
 	struct {
 		struct wl_signal pointer_grab_begin;
@@ -298,6 +303,13 @@ struct wlr_seat {
 	} events;
 
 	void *data;
+
+	struct {
+		struct wl_listener display_destroy;
+		struct wl_listener selection_source_destroy;
+		struct wl_listener primary_selection_source_destroy;
+		struct wl_listener drag_source_destroy;
+	} WLR_PRIVATE;
 };
 
 struct wlr_seat_pointer_request_set_cursor_event {
@@ -748,6 +760,6 @@ struct wlr_seat_client *wlr_seat_client_from_pointer_resource(
 /**
  * Check whether a surface has bound to touch events.
  */
-bool wlr_surface_accepts_touch(struct wlr_seat *wlr_seat, struct wlr_surface *surface);
+bool wlr_surface_accepts_touch(struct wlr_surface *surface, struct wlr_seat *wlr_seat);
 
 #endif

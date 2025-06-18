@@ -13,6 +13,43 @@
 #include <sys/types.h>
 
 /**
+ * Well-known color primaries.
+ */
+enum wlr_color_named_primaries {
+	WLR_COLOR_NAMED_PRIMARIES_SRGB = 1 << 0,
+	WLR_COLOR_NAMED_PRIMARIES_BT2020 = 1 << 1,
+};
+
+/**
+ * Well-known color transfer functions.
+ */
+enum wlr_color_transfer_function {
+	WLR_COLOR_TRANSFER_FUNCTION_SRGB = 1 << 0,
+	WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ = 1 << 1,
+};
+
+/**
+ * CIE 1931 xy chromaticity coordinates.
+ */
+struct wlr_color_cie1931_xy {
+	float x, y;
+};
+
+/**
+ * Color primaries and white point describing a color volume.
+ */
+struct wlr_color_primaries {
+	struct wlr_color_cie1931_xy red, green, blue, white;
+};
+
+/**
+ * Luminance range and reference white luminance level, in cd/m².
+ */
+struct wlr_color_luminances {
+	float min, max, reference;
+};
+
+/**
  * A color transformation formula, which maps a linear color space with
  * sRGB primaries to an output color space.
  *
@@ -44,7 +81,7 @@ struct wlr_color_transform *wlr_color_transform_init_srgb(void);
 /**
  * Increase the reference count of the color transform by 1.
  */
-void wlr_color_transform_ref(struct wlr_color_transform *tr);
+struct wlr_color_transform *wlr_color_transform_ref(struct wlr_color_transform *tr);
 
 /**
  * Reduce the reference count of the color transform by 1; freeing it and

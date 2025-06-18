@@ -94,6 +94,8 @@ static void output_destroy(struct wlr_output *wlr_output) {
 	struct wlr_x11_output *output = get_x11_output_from_output(wlr_output);
 	struct wlr_x11_backend *x11 = output->x11;
 
+	wlr_output_finish(wlr_output);
+
 	pixman_region32_fini(&output->exposed);
 
 	wlr_pointer_finish(&output->pointer);
@@ -127,6 +129,27 @@ static bool output_test(struct wlr_output *wlr_output,
 		wlr_log(WLR_DEBUG, "Unsupported output state fields: 0x%"PRIx32,
 			unsupported);
 		return false;
+	}
+
+	if (state->committed & WLR_OUTPUT_STATE_BUFFER) {
+		// If the size doesn't match, reject buffer (scaling is not supported)
+		int pending_width, pending_height;
+		output_pending_resolution(wlr_output, state,
+			&pending_width, &pending_height);
+		if (state->buffer->width != pending_width ||
+				state->buffer->height != pending_height) {
+			wlr_log(WLR_DEBUG, "Primary buffer size mismatch");
+			return false;
+		}
+		// Source crop is not supported
+		struct wlr_fbox src_box;
+		output_state_get_buffer_src_box(state, &src_box);
+		if (src_box.x != 0.0 || src_box.y != 0.0 ||
+				src_box.width != (double)state->buffer->width ||
+				src_box.height != (double)state->buffer->height) {
+			wlr_log(WLR_DEBUG, "Source crop not supported in X11 output");
+			return false;
+		}
 	}
 
 	// All we can do to influence adaptive sync on the X11 backend is set the
@@ -747,9 +770,6 @@ void handle_x11_present_event(struct wlr_x11_backend *x11,
 
 		output->last_msc = complete_notify->msc;
 
-		struct timespec t;
-		timespec_from_nsec(&t, complete_notify->ust * 1000);
-
 		uint32_t flags = 0;
 		if (complete_notify->mode == XCB_PRESENT_COMPLETE_MODE_FLIP) {
 			flags |= WLR_OUTPUT_PRESENT_ZERO_COPY;
@@ -760,10 +780,10 @@ void handle_x11_present_event(struct wlr_x11_backend *x11,
 			.output = &output->wlr_output,
 			.commit_seq = complete_notify->serial,
 			.presented = presented,
-			.when = &t,
 			.seq = complete_notify->msc,
 			.flags = flags,
 		};
+		timespec_from_nsec(&present_event.when, complete_notify->ust * 1000);
 		wlr_output_send_present(&output->wlr_output, &present_event);
 
 		wlr_output_send_frame(&output->wlr_output);

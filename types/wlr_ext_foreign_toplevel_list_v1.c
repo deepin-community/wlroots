@@ -1,4 +1,3 @@
-
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
@@ -54,6 +53,13 @@ static bool update_string(struct wlr_ext_foreign_toplevel_handle_v1 *toplevel,
 	return true;
 }
 
+struct wlr_ext_foreign_toplevel_handle_v1 *wlr_ext_foreign_toplevel_handle_v1_from_resource(
+		struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &ext_foreign_toplevel_handle_v1_interface,
+		&toplevel_handle_impl));
+	return wl_resource_get_user_data(resource);
+}
+
 void wlr_ext_foreign_toplevel_handle_v1_update_state(
 		struct wlr_ext_foreign_toplevel_handle_v1 *toplevel,
 		const struct wlr_ext_foreign_toplevel_handle_v1_state *state) {
@@ -83,6 +89,8 @@ void wlr_ext_foreign_toplevel_handle_v1_destroy(
 	}
 
 	wl_signal_emit_mutable(&toplevel->events.destroy, NULL);
+
+	assert(wl_list_empty(&toplevel->events.destroy.listener_list));
 
 	struct wl_resource *resource, *tmp;
 	wl_resource_for_each_safe(resource, tmp, &toplevel->resources) {
@@ -246,6 +254,9 @@ static void handle_display_destroy(struct wl_listener *listener, void *data) {
 	struct wlr_ext_foreign_toplevel_list_v1 *list =
 		wl_container_of(listener, list, display_destroy);
 	wl_signal_emit_mutable(&list->events.destroy, NULL);
+
+	assert(wl_list_empty(&list->events.destroy.listener_list));
+
 	wl_list_remove(&list->display_destroy.link);
 	wl_global_destroy(list->global);
 	free(list);
@@ -270,6 +281,7 @@ struct wlr_ext_foreign_toplevel_list_v1 *wlr_ext_foreign_toplevel_list_v1_create
 	}
 
 	wl_signal_init(&list->events.destroy);
+
 	wl_list_init(&list->resources);
 	wl_list_init(&list->toplevels);
 

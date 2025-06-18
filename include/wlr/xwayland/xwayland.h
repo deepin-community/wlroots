@@ -51,27 +51,28 @@ struct wlr_xwayland {
 	struct wlr_seat *seat;
 
 	struct {
+		struct wl_signal destroy;
 		struct wl_signal ready;
 		struct wl_signal new_surface; // struct wlr_xwayland_surface
 		struct wl_signal remove_startup_info; // struct wlr_xwayland_remove_startup_info_event
 	} events;
 
 	/**
-	 * Add a custom event handler to xwayland. Return 1 if the event was
-	 * handled or 0 to use the default wlr-xwayland handler. wlr-xwayland will
+	 * Add a custom event handler to xwayland. Return true if the event was
+	 * handled or false to use the default wlr-xwayland handler. wlr-xwayland will
 	 * free the event.
 	 */
-	int (*user_event_handler)(struct wlr_xwm *xwm, xcb_generic_event_t *event);
+	bool (*user_event_handler)(struct wlr_xwayland *wlr_xwayland, xcb_generic_event_t *event);
 
 	void *data;
 
-	// private state
-
-	struct wl_listener server_start;
-	struct wl_listener server_ready;
-	struct wl_listener server_destroy;
-	struct wl_listener seat_destroy;
-	struct wl_listener shell_destroy;
+	struct {
+		struct wl_listener server_start;
+		struct wl_listener server_ready;
+		struct wl_listener server_destroy;
+		struct wl_listener seat_destroy;
+		struct wl_listener shell_destroy;
+	} WLR_PRIVATE;
 };
 
 enum wlr_xwayland_surface_decorations {
@@ -90,6 +91,27 @@ enum wlr_xwayland_icccm_input_model {
 	WLR_ICCCM_INPUT_MODEL_PASSIVE = 1,
 	WLR_ICCCM_INPUT_MODEL_LOCAL = 2,
 	WLR_ICCCM_INPUT_MODEL_GLOBAL = 3,
+};
+
+/**
+ * The type of window (_NET_WM_WINDOW_TYPE). See:
+ * https://specifications.freedesktop.org/wm-spec/latest/
+ */
+enum wlr_xwayland_net_wm_window_type {
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DESKTOP = 0,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DOCK,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_TOOLBAR,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_MENU,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_UTILITY,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_POPUP_MENU,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_TOOLTIP,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_NOTIFICATION,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_COMBO,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DND,
+	WLR_XWAYLAND_NET_WM_WINDOW_TYPE_NORMAL,
 };
 
 /**
@@ -112,13 +134,11 @@ struct wlr_xwayland_surface {
 
 	struct wlr_surface *surface;
 	struct wlr_addon surface_addon;
-	struct wl_listener surface_commit;
-	struct wl_listener surface_map;
-	struct wl_listener surface_unmap;
 
 	int16_t x, y;
 	uint16_t width, height;
 	bool override_redirect;
+	float opacity;
 
 	char *title;
 	char *class;
@@ -159,6 +179,13 @@ struct wlr_xwayland_surface {
 	bool maximized_vert, maximized_horz;
 	bool minimized;
 	bool withdrawn;
+	bool sticky;
+	bool shaded;
+	bool skip_taskbar;
+	bool skip_pager;
+	bool above;
+	bool below;
+	bool demands_attention;
 
 	bool has_alpha;
 
@@ -171,6 +198,14 @@ struct wlr_xwayland_surface {
 		struct wl_signal request_maximize;
 		struct wl_signal request_fullscreen;
 		struct wl_signal request_activate;
+		struct wl_signal request_close;
+		struct wl_signal request_sticky;
+		struct wl_signal request_shaded;
+		struct wl_signal request_skip_taskbar;
+		struct wl_signal request_skip_pager;
+		struct wl_signal request_above;
+		struct wl_signal request_below;
+		struct wl_signal request_demands_attention;
 
 		struct wl_signal associate;
 		struct wl_signal dissociate;
@@ -186,12 +221,23 @@ struct wlr_xwayland_surface {
 		struct wl_signal set_strut_partial;
 		struct wl_signal set_override_redirect;
 		struct wl_signal set_geometry;
+		struct wl_signal set_opacity;
+		struct wl_signal focus_in;
+		struct wl_signal grab_focus;
 		/* can be used to set initial maximized/fullscreen geometry */
 		struct wl_signal map_request;
 		struct wl_signal ping_timeout;
 	} events;
 
 	void *data;
+
+	struct {
+		char *wm_name, *net_wm_name;
+
+		struct wl_listener surface_commit;
+		struct wl_listener surface_map;
+		struct wl_listener surface_unmap;
+	} WLR_PRIVATE;
 };
 
 struct wlr_xwayland_surface_configure_event {
@@ -259,10 +305,31 @@ void wlr_xwayland_surface_set_minimized(struct wlr_xwayland_surface *surface,
 	bool minimized);
 
 void wlr_xwayland_surface_set_maximized(struct wlr_xwayland_surface *surface,
-	bool maximized);
+	bool maximized_horz, bool maximized_vert);
 
 void wlr_xwayland_surface_set_fullscreen(struct wlr_xwayland_surface *surface,
 	bool fullscreen);
+
+void wlr_xwayland_surface_set_sticky(
+	struct wlr_xwayland_surface *surface, bool sticky);
+
+void wlr_xwayland_surface_set_shaded(
+	struct wlr_xwayland_surface *surface, bool shaded);
+
+void wlr_xwayland_surface_set_skip_taskbar(
+	struct wlr_xwayland_surface *surface, bool skip_taskbar);
+
+void wlr_xwayland_surface_set_skip_pager(
+	struct wlr_xwayland_surface *surface, bool skip_pager);
+
+void wlr_xwayland_surface_set_above(
+	struct wlr_xwayland_surface *surface, bool above);
+
+void wlr_xwayland_surface_set_below(
+	struct wlr_xwayland_surface *surface, bool below);
+
+void wlr_xwayland_surface_set_demands_attention(
+	struct wlr_xwayland_surface *surface, bool demands_attention);
 
 void wlr_xwayland_set_seat(struct wlr_xwayland *xwayland,
 	struct wlr_seat *seat);
@@ -276,7 +343,27 @@ void wlr_xwayland_set_seat(struct wlr_xwayland *xwayland,
 struct wlr_xwayland_surface *wlr_xwayland_surface_try_from_wlr_surface(
 	struct wlr_surface *surface);
 
+/**
+ * Offer focus by sending WM_TAKE_FOCUS to a client window supporting it.
+ * The client may accept or ignore the offer. If it accepts, the surface will
+ * emit the focus_in signal notifying the compositor that it has received focus.
+ *
+ * This is a more compatible method of giving focus to windows using the
+ * Globally Active input model (see wlr_xwayland_icccm_input_model()) than
+ * calling wlr_xwayland_surface_activate() unconditionally, since there is no
+ * reliable way to know in advance whether these windows want to be focused.
+ */
+void wlr_xwayland_surface_offer_focus(struct wlr_xwayland_surface *xsurface);
+
 void wlr_xwayland_surface_ping(struct wlr_xwayland_surface *surface);
+
+/**
+ * Returns true if the surface has the given window type.
+ * Note: a surface may have multiple window types set.
+ */
+bool wlr_xwayland_surface_has_window_type(
+	const struct wlr_xwayland_surface *xsurface,
+	enum wlr_xwayland_net_wm_window_type window_type);
 
 /** Metric to guess if an OR window should "receive" focus
  *
@@ -299,10 +386,10 @@ void wlr_xwayland_surface_ping(struct wlr_xwayland_surface *surface);
  * Returns: true if the window should receive focus
  *          false if it should be ignored
  */
-bool wlr_xwayland_or_surface_wants_focus(
+bool wlr_xwayland_surface_override_redirect_wants_focus(
 	const struct wlr_xwayland_surface *xsurface);
 
-enum wlr_xwayland_icccm_input_model wlr_xwayland_icccm_input_model(
+enum wlr_xwayland_icccm_input_model wlr_xwayland_surface_icccm_input_model(
 	const struct wlr_xwayland_surface *xsurface);
 
 /**

@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -12,9 +11,6 @@
 #include <wlr/config.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/util/log.h>
-#include "backend/backend.h"
-#include "backend/multi.h"
-#include "render/allocator/allocator.h"
 #include "types/wlr_output.h"
 #include "util/env.h"
 #include "util/time.h"
@@ -50,6 +46,10 @@ void wlr_backend_init(struct wlr_backend *backend,
 
 void wlr_backend_finish(struct wlr_backend *backend) {
 	wl_signal_emit_mutable(&backend->events.destroy, backend);
+
+	assert(wl_list_empty(&backend->events.destroy.listener_list));
+	assert(wl_list_empty(&backend->events.new_input.listener_list));
+	assert(wl_list_empty(&backend->events.new_output.listener_list));
 }
 
 bool wlr_backend_start(struct wlr_backend *backend) {
@@ -119,14 +119,6 @@ int wlr_backend_get_drm_fd(struct wlr_backend *backend) {
 		return -1;
 	}
 	return backend->impl->get_drm_fd(backend);
-}
-
-uint32_t backend_get_buffer_caps(struct wlr_backend *backend) {
-	if (!backend->impl->get_buffer_caps) {
-		return 0;
-	}
-
-	return backend->impl->get_buffer_caps(backend);
 }
 
 static size_t parse_outputs_env(const char *name) {

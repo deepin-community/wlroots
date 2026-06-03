@@ -1,1 +1,2 @@
 fix-dnd-handling-during-popup-interactions.patch
+xwayland-emit-set_parent-signal-when-parent-is-destroy.patch

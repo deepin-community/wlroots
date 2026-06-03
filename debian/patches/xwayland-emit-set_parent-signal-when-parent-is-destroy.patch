@@ -1,0 +1,26 @@
+From a94cd29eb13fc2fb68f2fe2d053fef29fb6ae712 Mon Sep 17 00:00:00 2001
+From: rewine <luhongxu@deepin.org>
+Date: Tue, 2 Jun 2026 17:02:21 +0800
+Subject: [PATCH] xwayland: emit set_parent signal when parent is destroyed
+
+When a xwayland surface is destroyed, its children's parent pointer
+is set to NULL, but the set_parent signal was not emitted.
+---
+ xwayland/xwm.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/xwayland/xwm.c b/xwayland/xwm.c
+index 8ffe7697..41398139 100644
+--- a/xwayland/xwm.c
++++ b/xwayland/xwm.c
+@@ -630,6 +630,7 @@ static void xwayland_surface_destroy(struct wlr_xwayland_surface *xsurface) {
+ 		wl_list_remove(&child->parent_link);
+ 		wl_list_init(&child->parent_link);
+ 		child->parent = NULL;
++		wl_signal_emit_mutable(&child->events.set_parent, NULL);
+ 	}
+ 
+ 	wl_list_remove(&xsurface->unpaired_link);
+-- 
+2.54.0
+

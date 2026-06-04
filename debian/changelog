@@ -1,3 +1,9 @@
+wlroots (0.19.0-0deepin2) unstable; urgency=medium
+
+  * fix: emit set_parent signal on destroy
+
+ -- rewine <luhongxu@deepin.org>  Thu, 04 Jun 2026 16:00:59 +0800
+
 wlroots (0.19.0-0deepin1) unstable; urgency=medium
 
   * Sync upstream 0.19.0.

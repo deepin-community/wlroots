@@ -1,3 +1,14 @@
+wlroots (0.19.0-0deepin3) unstable; urgency=medium
+
+  * fix(cve): CVE-2026-121604 (medium) - xwayland/xwm: fix out-of-bounds
+    strndup() in read_surface_class()   Upstream:
+    https://gitlab.freedesktop.org/wlroots/wlroots/-
+    /commit/851cdd0089004884bd85a95ad21f04009cb5a53a,https://gitlab.free
+    desktop.org/wlroots/wlroots/-
+    /commit/4412992469540b1d578cb94a5cd4e6e5829812dc
+
+ -- deepin-ci-robot <packages@deepin.org>  Wed, 04 Nov 2026 08:58:00 +0800
+
 wlroots (0.19.0-0deepin2) unstable; urgency=medium
 
   * fix: emit set_parent signal on destroy

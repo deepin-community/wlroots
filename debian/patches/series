@@ -1,2 +1,3 @@
 fix-dnd-handling-during-popup-interactions.patch
 xwayland-emit-set_parent-signal-when-parent-is-destroy.patch
+CVE-2026-121604.patch
